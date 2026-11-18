@@ -1,0 +1,13 @@
+---
+name: "eden-custom-armada"
+description: "User's custom Eden (Switch emulator) aarch64 AppImage for ArmadaOS on the AYN Thor, kept updated to new Eden nightlies"
+---
+
+- Has a custom Eden aarch64 AppImage (for ArmadaOS on the AYN Thor) and wants it kept on the latest Eden nightly with "our patches" re-applied
+- Wants the custom Eden build to set CPU/GPU clock speed to max while running, as was done for their nxnative ports
+- Has Steam ROM Manager set up for Eden on the Thor and doesn't want to redo it
+- Wants one all-in-one Switch + Switch 2 app: Fritchii (Frizti/Fritchii) built for the Thor with "our patches", reading all existing Eden saves and data
+- Wants Eden Duo's companion screens (igawa6/eden-duo, .dsmod.zip companion packages) working on ArmadaOS in the custom Fritchii Thor build
+- Wants a new Eden Duo companion made for Pokémon Mystery Dungeon: Rescue Team DX (owns version 1.0.2) showing the stats menu and dungeon map on the bottom screen
+- Runs ArmadaLive on the Thor's bottom screen; dual-screen companions must show above it in Game Mode
+- Decided to merge Eden Duo's companion ability directly into Fritchii (one engine) after the separate Duo engine gave bad fps, long loads and a crash
