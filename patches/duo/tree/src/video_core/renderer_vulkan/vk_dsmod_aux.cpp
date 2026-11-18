@@ -699,7 +699,7 @@ bool DSModAuxPresenter::RenderAuxModUi() {
     if (frame->width != layout.width || frame->height != layout.height || !frame->image) {
         aux_present_manager->RecreateFrame(frame, layout.width, layout.height,
                                            aux_swapchain->GetImageViewFormat(),
-                                           *aux_ui_render_pass, /*storage=*/false);
+                                           *aux_ui_render_pass);
     }
 
     const VkExtent2D dst_extent{frame->width, frame->height};
@@ -1223,8 +1223,7 @@ bool DSModAuxPresenter::RenderAuxModUiGpu() {
     }
     if (frame->width != layout.width || frame->height != layout.height || !frame->framebuffer) {
         aux_present_manager->RecreateFrame(frame, layout.width, layout.height,
-                                           aux_swapchain->GetImageViewFormat(), *aux_c_render_pass,
-                                           /*storage=*/false);
+                                           aux_swapchain->GetImageViewFormat(), *aux_c_render_pass);
     }
     RecordCompositeDraws(*frame->framebuffer, *frame->image,
                          VkExtent2D{frame->width, frame->height}, fit, fit.full);

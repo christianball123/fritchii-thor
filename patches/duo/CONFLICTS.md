@@ -28,9 +28,11 @@ Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 | `common/thread.cpp` `nx2_debug_control.h` for aarch64 EXP103 | `hooks/0017` |
 | `PerfStats::GetTotals` definition inside `namespace Core` | `hooks/0015` |
 | `AppLoader::GetFile` + `OpenProgramNcaFromGameFile` (Duo private RomFS) | `hooks/0016` |
+| `fritchii_write_ring.h` `strncpy` bound `size-1` (stringop-truncation) | `hooks/0018` |
+| Duo Companion actions inside `main.ui` widget | `hooks/0019` |
 | `video_core` `-frtti` (Fritchii `-fno-rtti` vs `dynamic_cast`) | `tree/…/duo_video_core.cmake` |
 | Aux `RecreateFrame` without Duo `storage` flag | `tree/…/vk_dsmod_aux.cpp` |
-| Duo Companion actions inside `main.ui` widget | `hooks/0018` |
+| Thor aarch64: `-DENABLE_WERROR=OFF` + selected `-Wno-error=*` | `packaging/thor/scripts/configure-thor.sh` |
 
 ## Must still port by hand / out of Thor Linux scope
 

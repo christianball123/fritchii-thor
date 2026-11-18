@@ -14,7 +14,7 @@ Android JNI / Kotlin from Duo is **not** included. Packaging hooks stay in
 | Path | Role |
 |---|---|
 | `tree/` | Duo-only sources to copy in: `src/core/mods/`, `hle/service/dsm/`, `file_sys/duo_external_content_index.*`, `video_core/dsmod/`, `vk_dsmod_*`, companion shaders, `common/dsmod_dev_tools.h`, `hid_core/.../dsmod_pad_gate.h`, Thor `src/yuzu/duo/`, docs |
-| `hooks/0001-*.patch` … `0016-*.patch` | Fritchii-v6.1-targeted hooks — **`git apply --check` clean** |
+| `hooks/0001-*.patch` … `0019-*.patch` | Fritchii-v6.1-targeted hooks — **`git apply --check` clean** |
 | `thor-qt/` | Same Thor Qt sources + `main.ui` patch (also mirrored under `tree/src/yuzu/duo/`) |
 | `refs/eden-duo-vs-eden/` | Eden base `6828dc59` → Duo diffs for files still needing a **manual** Fritchii port |
 | `refs/upstream-hooks-linux.tsv` | Duo’s ledger of non-Android upstream touches |
@@ -84,6 +84,9 @@ CLI install remains `packaging/thor/duo-companion.py` via
 | `0014` | `mod_manager` recognizes `dualscreen/` mod folders |
 | `0015` | Move `PerfStats::GetTotals` inside `namespace Core` (0002 placed it after the close) |
 | `0016` | `AppLoader::GetFile` + `FileSys::OpenProgramNcaFromGameFile` for Duo private RomFS |
+| `0017` | `common/thread.cpp` includes `nx2_debug_control.h` on aarch64 (EXP103) |
+| `0018` | `fritchii_write_ring.h` `strncpy` uses `size-1` (GCC `-Werror=stringop-truncation`) |
+| `0019` | Move Duo Companion `<action>` defs inside main widget (0004 left them after `</widget>`) |
 
 Also in `tree/`:
 - `duo_video_core.cmake`: `-frtti` for `video_core` (Fritchii `-fno-rtti` +

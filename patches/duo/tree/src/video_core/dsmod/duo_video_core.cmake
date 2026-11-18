@@ -15,3 +15,8 @@ target_sources(video_core PRIVATE
     renderer_vulkan/vk_dsmod_rt_probe.cpp
     renderer_vulkan/vk_dsmod_texture_readback.cpp
 )
+
+# Fritchii v6.1 enables -fno-rtti globally but several video_core TUs (fritchii_e_split,
+# memstage_shadow, gpu_split) use dynamic_cast. Re-enable RTTI for this target so Duo+Fritchii
+# builds (gcc/clang) can link; later -frtti wins over the directory -fno-rtti flag.
+target_compile_options(video_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-frtti>)
