@@ -77,3 +77,5 @@ nearly every non-trivial file (`core.cpp`, `gpu.cpp`, `nso.cpp`,
 `renderer_vulkan.cpp`, …). That is expected: those diffs are documentation /
 porting guides, not Fritchii patches. Only `hooks/0*.patch` are authored
 against fritchii-v6.1.
+
+- Hook 0021: guard nvhost_gpu.cpp immintrin/_mm_prefetch for aarch64 (stock Fritchii v6.1).

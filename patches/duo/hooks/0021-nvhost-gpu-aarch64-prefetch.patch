@@ -1,0 +1,29 @@
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+index 192131567..8e7faebab 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+@@ -6,7 +6,9 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+ #include <immintrin.h>
++#endif
+ #include <atomic>
+ #include <chrono>
+ #include <condition_variable>
+@@ -523,9 +525,14 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
+                         if (const u8* ahead = host_of(i + 8)) {
+                             const u64 ahead_bytes =
+                                 static_cast<u64>(lists[i + 8].size) * sizeof(u32);
++#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+                             _mm_prefetch(reinterpret_cast<const char*>(ahead), _MM_HINT_T0);
+                             _mm_prefetch(reinterpret_cast<const char*>(ahead + ahead_bytes - 1),
+                                          _MM_HINT_T0);
++#else
++                            __builtin_prefetch(ahead, 0, 3);
++                            __builtin_prefetch(ahead + ahead_bytes - 1, 0, 3);
++#endif
+                         }
+                     }
+                     const auto& entry = lists[i];
