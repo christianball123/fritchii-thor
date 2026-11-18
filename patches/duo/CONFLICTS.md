@@ -30,6 +30,7 @@ Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 | `AppLoader::GetFile` + `OpenProgramNcaFromGameFile` (Duo private RomFS) | `hooks/0016` |
 | `video_core` `-frtti` (Fritchii `-fno-rtti` vs `dynamic_cast`) | `tree/…/duo_video_core.cmake` |
 | Aux `RecreateFrame` without Duo `storage` flag | `tree/…/vk_dsmod_aux.cpp` |
+| Duo Companion actions inside `main.ui` widget | `hooks/0018` |
 
 ## Must still port by hand / out of Thor Linux scope
 

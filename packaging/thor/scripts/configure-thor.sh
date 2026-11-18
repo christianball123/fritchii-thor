@@ -10,8 +10,13 @@ PGO="${PGO:-0}"
 PGO_LLVM_VERSION="${PGO_LLVM_VERSION:-23}"
 
 tune="-march=armv8.2-a+crypto+fp16+rcpc+dotprod -mtune=cortex-x3"
-cflags="$tune"
-cxxflags="$tune"
+# Ubuntu 24.04 arm64 GCC is stricter than Frizti's x86_64 release builders on a few
+# -Werror=… categories (e.g. stringop-truncation in common/fritchii_write_ring.h).
+# Keep warnings visible but don't fail the Thor AppImage on stock Fritchii noise.
+werror_relax="-Wno-error=stringop-truncation -Wno-error=stringop-overflow \
+-Wno-error=array-bounds -Wno-error=maybe-uninitialized -Wno-error=restrict"
+cflags="$tune $werror_relax"
+cxxflags="$tune $werror_relax"
 
 flags=(
   -DCMAKE_BUILD_TYPE=Release

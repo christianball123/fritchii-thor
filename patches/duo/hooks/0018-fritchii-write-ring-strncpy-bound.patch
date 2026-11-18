@@ -1,0 +1,23 @@
+From: Cursor Agent <cursoragent@cursor.com>
+Subject: [PATCH] fritchii_write_ring: strncpy bound leaves room for NUL
+
+GCC 13 on ubuntu-24.04-arm with -Werror=stringop-truncation rejects
+strncpy(..., 16) into a 16-byte buffer. Size-1 matches the intent (16-char
+name storage that is memcpy'd as raw bytes).
+
+---
+ src/common/fritchii_write_ring.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/common/fritchii_write_ring.h b/src/common/fritchii_write_ring.h
+--- a/src/common/fritchii_write_ring.h
++++ b/src/common/fritchii_write_ring.h
+@@ -63,7 +63,7 @@ inline thread_local bool t_quiet = false;
+ inline void NameThread(const char* name) noexcept {
+     std::array<char, 16> chars{};
+     if (name != nullptr) {
+-        std::strncpy(chars.data(), name, chars.size());
++        std::strncpy(chars.data(), name, chars.size() - 1);
+     }
+     std::memcpy(t_thread.data(), chars.data(), chars.size());
+ }
