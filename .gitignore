@@ -1,4 +1,2 @@
-# Duo companion .so modules are ABI-tied and large; keep them next to a local AppImage build.
-packaging/thor/duo-modules/*.so
 *.AppImage
 squashfs-root/

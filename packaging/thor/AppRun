@@ -1,16 +1,36 @@
 #!/bin/sh
-# AppImage launcher for the AYN Thor (ArmadaOS / Fedora, Adreno 740 with Mesa Turnip).
+# AppImage launcher for Fritchii on AYN Thor (ArmadaOS / Fedora, Adreno 740 Turnip).
+# Used with linuxdeploy (--custom-apprun). Hooks live next to the binaries under usr/bin.
 HERE="$(dirname "$(readlink -f "$0")")"
-export QT_PLUGIN_PATH="$HERE/usr/plugins"
+export APPDIR="${APPDIR:-$HERE}"
+export PATH="$HERE/usr/bin:$PATH"
+export QT_PLUGIN_PATH="${QT_PLUGIN_PATH:-$HERE/usr/plugins}"
 
-# Game Mode (gamescope): Qt windows are most reliable through XWayland there.
+# Game Mode (gamescope): Qt is most reliable through XWayland there.
 if [ -n "$GAMESCOPE_WAYLAND_DISPLAY" ] && [ -z "$QT_QPA_PLATFORM" ]; then
     export QT_QPA_PLATFORM=xcb
 fi
 
-# Bigger Mesa shader cache (default 1 GB) so Switch 2 games don't rebuild shaders every launch.
+# Bigger Mesa shader cache so Switch 2 titles do not rebuild shaders every launch.
 export MESA_SHADER_CACHE_MAX_SIZE="${MESA_SHADER_CACHE_MAX_SIZE:-4G}"
 
-# ./Lichii.AppImage --cli <args> runs the command-line build instead.
-if [ "$1" = "--cli" ]; then shift; exec "$HERE/usr/bin/eden-cli" "$@"; fi
-exec "$HERE/usr/bin/lichii" "$@"
+# Source Thor hooks (clock-max, Turnip ICD pick, Duo companion CLI).
+if [ -f "$HERE/usr/bin/AppRun.lib" ]; then
+    # shellcheck source=/dev/null
+    . "$HERE/usr/bin/AppRun.lib"
+fi
+for hook in "$HERE"/usr/bin/*.hook; do
+    [ -e "$hook" ] || continue
+    # shellcheck source=/dev/null
+    . "$hook"
+done
+
+MAIN_BIN=eden
+if [ "$1" = "--cli" ]; then
+    shift
+    exec "$HERE/usr/bin/eden-cli" "$@"
+fi
+if [ -x "$HERE/usr/bin/${0##*/}" ] && [ "${0##*/}" != "AppRun" ]; then
+    exec "$HERE/usr/bin/${0##*/}" "$@"
+fi
+exec "$HERE/usr/bin/$MAIN_BIN" "$@"

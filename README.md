@@ -16,6 +16,8 @@ Christian’s agent memory plus the **Fritchii Thor** AppImage packaging kit for
 
 See `packaging/thor/BUILD.md` for rebuild steps onto Fritchii **v6.1**.
 Duo source patches live in `patches/duo/` (`README.md`, `scripts/apply.sh`).
+Arm64 CI workflow: `.github/workflows/fritchii-thor-aarch64.yml` (run on GitHub
+`ubuntu-24.04-arm` after mirroring, or copy into a Fritchii fork).
 
 ### Origin clone
 

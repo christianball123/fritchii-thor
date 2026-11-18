@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2025 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# SPDX-FileCopyrightText: 2018 yuzu Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Fritchii
+GenericName=Switch Emulator
+Comment=Switch & Switch 2 emulator (Fritchii, Thor build)
+Icon=dev.eden_emu.eden
+TryExec=eden
+Exec=eden %f
+Categories=Game;Emulator;Qt;
+MimeType=application/x-nx-nro;application/x-nx-nso;application/x-nx-nsp;application/x-nx-xci;
+Keywords=Nintendo;Switch;
+StartupWMClass=eden
+
+X-AppImage-Name=Eden_Nightly
+X-AppImage-Version=v1794350456.cf654052c4
+X-AppImage-Arch=aarch64

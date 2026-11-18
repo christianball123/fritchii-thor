@@ -38,9 +38,28 @@ Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/
 ## Rebuild plan (Fritchii v6.1)
 
 1. Start from `Frizti/Fritchii` tag `fritchii-v6.1`.
-2. Apply the Duo patch kit: `patches/duo/scripts/apply.sh /path/to/Fritchii` (see `patches/duo/README.md`). Loader mailbox + Vulkan `Composite()` / `dsmod_aux` are in hooks 0005–0007; optional remaining ports are in `patches/duo/CONFLICTS.md`.
-3. Build **linux-aarch64** (GitHub Actions `ubuntu-24.04-arm`, same flags as the old Lichii `thor-build` PGO job when a profile exists).
-4. Package with sharun/Anylinux (or linuxdeploy), then drop in the hooks from this folder and `share/duo-modules/`.
-5. Ship as `Fritchii-Thor-aarch64.AppImage` (keep `eden` TryExec / StartupWMClass if Steam entries already use them).
+2. Apply the Duo patch kit: `packaging/thor/scripts/apply-patches.sh /path/to/Fritchii` (hooks `0001`–`0008` cover DualScreen runtime, Vulkan Composite/aux present, NSO mailbox, npad gate; leftover texture-cache / kernel ports are in `patches/duo/CONFLICTS.md`).
+3. Configure + build on **linux-aarch64**:
+   ```bash
+   packaging/thor/scripts/configure-thor.sh   # from Fritchii root
+   cmake --build build/release --parallel
+   ```
+4. Package:
+   ```bash
+   packaging/thor/scripts/package-appimage.sh /path/to/Fritchii /path/to/memvault
+   ```
+   This uses linuxdeploy (Thor excludes system Vulkan/Turnip), injects
+   `00-custom-odin.hook`, clock-max, Duo companion CLI, and `duo-modules/*.so`.
+5. Ship as `Fritchii-Thor-aarch64.AppImage` (keep `eden` TryExec / StartupWMClass).
 
-Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built on arm64 CI (not this x86_64 agent).
+### GitHub Actions
+
+Workflow: `.github/workflows/fritchii-thor-aarch64.yml` (manual dispatch on
+`ubuntu-24.04-arm`). Origin does not run GitHub Actions — mirror this repo to
+GitHub or copy `patches/duo` + `packaging/thor` into a Frizti/Fritchii fork and
+run the workflow there. Artifact: `Fritchii-Thor-aarch64.AppImage`.
+
+Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built
+on arm64 CI (not this x86_64 agent). The older Claude AppImage used sharun;
+`AppRun.sh` / `AppRun.lib` remain for that layout. New builds use linuxdeploy +
+`AppRun` (same hooks).
