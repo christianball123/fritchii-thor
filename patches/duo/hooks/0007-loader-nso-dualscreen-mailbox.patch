@@ -1,0 +1,550 @@
+diff --git a/src/core/hle/kernel/code_set.h b/src/core/hle/kernel/code_set.h
+index 1040f65..47be0ac 100644
+--- a/src/core/hle/kernel/code_set.h
++++ b/src/core/hle/kernel/code_set.h
+@@ -77,6 +77,14 @@ struct CodeSet final {
+         return segments[2];
+     }
+ 
++    Segment& CompanionCodeSegment() {
++        return companion_code_segment;
++    }
++
++    const Segment& CompanionCodeSegment() const {
++        return companion_code_segment;
++    }
++
+ #ifdef HAS_NCE
+     Segment& PatchSegment() {
+         return patch_segment;
+@@ -99,6 +107,8 @@ struct CodeSet final {
+     std::vector<u8> memory;
+     /// The segments that comprise this code set.
+     std::array<Segment, 3> segments;
++    /// Optional loader-owned RX pages, separate from native NSO data and NCE trampolines.
++    Segment companion_code_segment;
+ 
+ #ifdef HAS_NCE
+     Segment patch_segment;
+diff --git a/src/core/hle/kernel/k_page_table_base.cpp b/src/core/hle/kernel/k_page_table_base.cpp
+index 2e92f73..51b1cf1 100644
+--- a/src/core/hle/kernel/k_page_table_base.cpp
++++ b/src/core/hle/kernel/k_page_table_base.cpp
+@@ -2004,7 +2004,8 @@ Result KPageTableBase::SetMemoryPermission(KProcessAddress addr, size_t size,
+ }
+ 
+ Result KPageTableBase::SetProcessMemoryPermission(KProcessAddress addr, size_t size,
+-                                                  Svc::MemoryPermission svc_perm) {
++                                                  Svc::MemoryPermission svc_perm,
++                                                  bool generated_code) {
+     const size_t num_pages = size / PageSize;
+ 
+     // Lock the table.
+@@ -2032,6 +2033,15 @@ Result KPageTableBase::SetProcessMemoryPermission(KProcessAddress addr, size_t s
+         (old_perm & KMemoryPermission::UserExecute) == KMemoryPermission::UserExecute;
+     ASSERT(!(is_w && is_x));
+ 
++    // Loader-only private helpers are executable allocations, not NSO modules.
++    // Require a one-way transition from freshly allocated Code directly to RX.
++    if (generated_code) {
++        R_UNLESS(old_state == KMemoryState::Code &&
++                     svc_perm == Svc::MemoryPermission::ReadExecute,
++                 ResultInvalidCurrentMemory);
++        new_state = KMemoryState::GeneratedCode;
++    }
++
+     if (is_w) {
+         switch (old_state) {
+         case KMemoryState::Code:
+diff --git a/src/core/hle/kernel/k_page_table_base.h b/src/core/hle/kernel/k_page_table_base.h
+index 8ac2387..6fb01b0 100644
+--- a/src/core/hle/kernel/k_page_table_base.h
++++ b/src/core/hle/kernel/k_page_table_base.h
+@@ -504,7 +504,7 @@ public:
+ 
+     Result SetMemoryPermission(KProcessAddress addr, size_t size, Svc::MemoryPermission perm);
+     Result SetProcessMemoryPermission(KProcessAddress addr, size_t size,
+-                                      Svc::MemoryPermission perm);
++                                      Svc::MemoryPermission perm, bool generated_code = false);
+     Result SetMemoryAttribute(KProcessAddress addr, size_t size, KMemoryAttribute mask,
+                               KMemoryAttribute attr);
+     Result SetHeapSize(KProcessAddress* out, size_t size);
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index 96cc370..c525bda 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -1285,8 +1285,22 @@ void KProcess::LoadModule(KernelCore& kernel, CodeSet code_set, KProcessAddress
+     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
+     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);
+     ReprotectSegment(code_set.DataSegment(), Svc::MemoryPermission::ReadWrite);
++    const auto& companion_code = code_set.CompanionCodeSegment();
++    if (companion_code.size != 0) {
++        // Native rtld treats RX Code mappings as NSOs and requires MOD0 headers.
++        // Seal this non-module allocation as GeneratedCode without an RWX phase.
++        ASSERT(m_page_table.GetBasePageTable()
++                   .SetProcessMemoryPermission(companion_code.addr + base_addr, companion_code.size,
++                                               Svc::MemoryPermission::ReadExecute, true)
++                   .IsSuccess());
++    }
+ 
+ #ifdef HAS_NCE
++    if (this->IsApplication() && Settings::IsNceEnabled() && companion_code.size != 0) {
++        kernel.System().DeviceMemory().buffer.Protect(
++            GetInteger(base_addr + companion_code.addr), companion_code.size,
++            Common::MemoryPermission::Read | Common::MemoryPermission::Execute);
++    }
+     const auto& patch = code_set.PatchSegment();
+     const auto& post_patch = code_set.PostPatchSegment();
+     if (this->IsApplication() && Settings::IsNceEnabled() && patch.size != 0) {
+diff --git a/src/core/loader/deconstructed_rom_directory.cpp b/src/core/loader/deconstructed_rom_directory.cpp
+index d4d0dff..be016f5 100644
+--- a/src/core/loader/deconstructed_rom_directory.cpp
++++ b/src/core/loader/deconstructed_rom_directory.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <array>
+ #include <cctype>
+ #include <charconv>
+ #include <chrono>
+@@ -11,6 +12,7 @@
+ #include <map>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <string_view>
+ #include "common/logging.h"
+ #include "common/random.h"
+@@ -74,6 +76,75 @@ struct PatchCollection {
+         return static_cast<s32>(patchers.size()) - 1;
+     }
+ 
++    // Patch space the layout pass added after the module it just laid out.
++    size_t GetLayoutPatchSize() const {
++#ifdef HAS_NCE
++        if (UsesPatchers()) {
++            const auto& patcher = patchers[GetLastIndex()];
++            switch (patcher.GetPatchMode()) {
++            case Core::NCE::PatchMode::Split:
++                return patcher.GetPreSectionSize() + patcher.GetSectionSize();
++            case Core::NCE::PatchMode::PreText:
++            case Core::NCE::PatchMode::PostData:
++                return patcher.GetSectionSize();
++            default:
++                break;
++            }
++        }
++#endif
++        return 0;
++    }
++
++    // Where a module will start in the load pass, relative to the code base.
++    u64 GetLoadPassOffset(size_t module, const std::array<u64, 13>& layout_sizes) const {
++        u64 offset{};
++        for (size_t i = 0; i < module; i++) {
++            if (module_patcher_indices[i] >= 0) {
++                offset += GetPreSpace(i) + layout_sizes[i] + GetPostSpace(i);
++            }
++        }
++        return offset + GetPreSpace(module);
++    }
++
++private:
++    bool UsesPatchers() const {
++        return is_application && Settings::IsNceEnabled();
++    }
++
++    size_t GetPreSpace([[maybe_unused]] size_t module) const {
++#ifdef HAS_NCE
++        if (UsesPatchers()) {
++            const auto& patcher = patchers[module_patcher_indices[module]];
++            if (patcher.GetPatchMode() == Core::NCE::PatchMode::PreText) {
++                return patcher.GetSectionSize();
++            } else if (patcher.GetPatchMode() == Core::NCE::PatchMode::Split) {
++                return patcher.GetPreSectionSize();
++            }
++        }
++#endif
++        return 0;
++    }
++
++    size_t GetPostSpace([[maybe_unused]] size_t module) const {
++#ifdef HAS_NCE
++        if (UsesPatchers()) {
++            const s32 index = module_patcher_indices[module];
++            for (size_t later = module + 1; later < module_patcher_indices.size(); later++) {
++                if (module_patcher_indices[later] == index) {
++                    return 0;
++                }
++            }
++            const auto& patcher = patchers[index];
++            if (patcher.GetPatchMode() == Core::NCE::PatchMode::PostData ||
++                patcher.GetPatchMode() == Core::NCE::PatchMode::Split) {
++                return patcher.GetSectionSize();
++            }
++        }
++#endif
++        return 0;
++    }
++
++public:
+     bool is_application;
+     std::vector<Core::NCE::Patcher> patchers;
+     std::array<s32, 13> module_patcher_indices{};
+@@ -462,7 +533,34 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+     // Define an nce patch context for each potential module.
+     PatchCollection patch_ctx{is_application};
+ 
++    // A dual-screen load plan gets its mailbox after the last module (see DualScreenMailboxSlot).
++    // Only the module the plan targets is given the title ID, so the package manifest is parsed
++    // for it alone.
++    const auto load_plan_target =
++        AppLoader_NSO::LoadPlanTargetModule(system, metadata.GetTitleID());
++    const auto load_plan_title_id = [&](const char* module) -> std::optional<u64> {
++        if (load_plan_target && *load_plan_target == module) {
++            return metadata.GetTitleID();
++        }
++        return std::nullopt;
++    };
++    AppLoader_NSO::DualScreenMailboxSlot mailbox_slot;
++    size_t mailbox_host_index{};
++    for (size_t i = 0; i < static_modules.size(); i++) {
++        if (dir->GetFile(static_modules[i])) {
++            mailbox_slot.host = static_modules[i];
++            mailbox_host_index = i;
++        }
++    }
++    if (load_plan_target && mailbox_slot.host != *load_plan_target) {
++        if (const auto target_file = dir->GetFile(*load_plan_target)) {
++            mailbox_slot.size = AppLoader_NSO::PeekLoadPlanMailboxSize(system, *target_file,
++                                                                       metadata.GetTitleID());
++        }
++    }
++
+     // Use the NSO module loader to figure out the code layout
++    std::array<u64, 13> layout_sizes{}; // per module, without NCE patch space
+     for (size_t i = 0; i < static_modules.size(); i++) {
+         const auto& module = static_modules[i];
+         const FileSys::VirtualFile module_file{dir->GetFile(module)};
+@@ -473,14 +571,22 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+         const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+             process, system, *module_file, code_size, should_pass_arguments, false, {},
+-            patch_ctx.GetPatchers(), patch_ctx.GetLastIndex());
++            patch_ctx.GetPatchers(), patch_ctx.GetLastIndex(), load_plan_title_id(module),
++            &mailbox_slot);
+         if (!tentative_next_load_addr) {
+             return {ResultStatus::ErrorLoadingNSO, {}};
+         }
+ 
++        layout_sizes[i] = *tentative_next_load_addr - code_size - patch_ctx.GetLayoutPatchSize();
+         patch_ctx.SaveIndex(i);
+         code_size = *tentative_next_load_addr;
+     }
++    // The load pass places NCE patch space differently from the layout pass, so the mailbox
++    // address comes from the host's load-pass offset, not from the layout pass.
++    const u64 mailbox_offset = mailbox_slot.size != 0
++                                   ? patch_ctx.GetLoadPassOffset(mailbox_host_index, layout_sizes) +
++                                         mailbox_slot.layout_end
++                                   : 0;
+ 
+     // Enable direct memory mapping in case of NCE.
+     const u64 fastmem_base = [&]() -> size_t {
+@@ -507,6 +613,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+     // Load NSO modules
+     modules.clear();
+     const VAddr base_address{GetInteger(process.GetEntryPoint())};
++    mailbox_slot.address = mailbox_slot.size != 0 ? base_address + mailbox_offset : 0;
+     VAddr next_load_addr{base_address};
+     const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
+                                    system.GetContentProvider()};
+@@ -521,7 +628,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+         const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+             process, system, *module_file, load_addr, should_pass_arguments, true, pm,
+-            patch_ctx.GetPatchers(), patch_ctx.GetIndex(i));
++            patch_ctx.GetPatchers(), patch_ctx.GetIndex(i), load_plan_title_id(module),
++            &mailbox_slot);
+         if (!tentative_next_load_addr) {
+             return {ResultStatus::ErrorLoadingNSO, {}};
+         }
+diff --git a/src/core/loader/nro.cpp b/src/core/loader/nro.cpp
+index 178b518..f10b3dd 100644
+--- a/src/core/loader/nro.cpp
++++ b/src/core/loader/nro.cpp
+@@ -296,6 +296,11 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
+     // Load codeset for current process
+     codeset.memory = std::move(program_image);
+     process.LoadModule(system.Kernel(), std::move(codeset), process.GetEntryPoint());
++
++    // DSMod: homebrew can carry a dual-screen package too; "main+..." is relative to the NRO base.
++    // NROs have no build id, so such a package uses the generic "data.json" data file.
++    system.RegisterDualScreenMod(std::array<u8, 0x20>{},
++                                 GetInteger(process.GetEntryPoint()), image_size);
+     if (!argv_string.empty()) {
+         constexpr u32 kEntryEndOfList = 0;
+         constexpr u32 kEntryMainThreadHandle = 1;
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index f0259c2..0adb765 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -9,6 +9,8 @@
+ #include <limits>
+ #include <optional>
+ #include <span>
++#include <string>
++#include <string_view>
+ #include <vector>
+ 
+ #include "common/common_funcs.h"
+@@ -28,6 +30,7 @@
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/loader/nso.h"
+ #include "core/memory.h"
++#include "core/mods/mod_load_plan.h"
+ 
+ #ifdef HAS_NCE
+ #include "core/arm/nce/patcher.h"
+@@ -71,7 +74,36 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
+     return FileType::NSO;
+ }
+ 
+-std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file, VAddr load_base, bool should_pass_arguments, bool load_into_process, std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches, s32 patch_index) {
++std::optional<std::string> AppLoader_NSO::LoadPlanTargetModule(Core::System& system,
++                                                               u64 title_id) {
++    return Core::Mods::LoadPlanTargetModule(system, title_id);
++}
++
++u64 AppLoader_NSO::PeekLoadPlanMailboxSize(Core::System& system, const FileSys::VfsFile& nso_file,
++                                           u64 title_id) {
++    NSOHeader nso_header{};
++    if (nso_file.GetSize() < sizeof(NSOHeader) ||
++        sizeof(NSOHeader) != nso_file.ReadObject(&nso_header) ||
++        nso_header.magic != Common::MakeMagic('N', 'S', 'O', '0')) {
++        return 0;
++    }
++    Core::Mods::LoadPlanLayout layout;
++    for (size_t i = 0; i < layout.segments.size(); ++i) {
++        layout.segments[i] = {nso_header.segments[i].location, nso_header.segments[i].size};
++    }
++    layout.bss_size = nso_header.segments[2].bss_size;
++    const auto discovery = Core::Mods::DiscoverModLoadPlan(system, title_id, nso_header.build_id,
++                                                           nso_file.GetName(), layout);
++    return discovery.plan ? discovery.plan->MailboxSize() : 0;
++}
++
++std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system,
++                                               const FileSys::VfsFile& nso_file, VAddr load_base,
++                                               bool should_pass_arguments, bool load_into_process,
++                                               std::optional<FileSys::PatchManager> pm,
++                                               std::vector<Core::NCE::Patcher>* patches,
++                                               s32 patch_index, std::optional<u64> title_id,
++                                               DualScreenMailboxSlot* mailbox_slot) {
+     if (nso_file.GetSize() < sizeof(NSOHeader))
+         return std::nullopt;
+     NSOHeader nso_header{};
+@@ -202,6 +234,30 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
+     codeset.memory.resize(image_size);
+ 
++    const bool mailbox_host =
++        mailbox_slot && mailbox_slot->size != 0 && nso_file.GetName() == mailbox_slot->host;
++    if (mailbox_host) {
++        if (mailbox_slot->size > std::numeric_limits<u32>::max() - image_size) {
++            LOG_ERROR(Loader, "Dual-screen mailbox is too large for {}", nso_file.GetName());
++            return std::nullopt;
++        }
++        if (!load_into_process) {
++            // Relative to this module: under NCE the layout pass spaces modules differently from
++            // the load pass, so the loader turns it into an address itself.
++            mailbox_slot->layout_end = image_size;
++        } else if (mailbox_slot->address != load_base + image_size) {
++            LOG_ERROR(Loader, "Dual-screen mailbox moved: planned {:#x}, {} ends at {:#x}",
++                      mailbox_slot->address, nso_file.GetName(), load_base + image_size);
++            return std::nullopt;
++        }
++        // Data segment and image end are page aligned here, so the mailbox starts on a page.
++        codeset.DataSegment().size =
++            image_size - static_cast<u32>(GetInteger(codeset.DataSegment().addr));
++        codeset.memory.resize(image_size + mailbox_slot->size);
++        codeset.DataSegment().size += static_cast<u32>(mailbox_slot->size);
++        image_size += static_cast<u32>(mailbox_slot->size);
++    }
++
+     for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
+         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);
+     }
+@@ -220,6 +276,89 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
+     }
+ 
++    std::optional<Core::Mods::ModLoadPlan> load_plan;
++    VAddr mailbox_address{};
++    bool plan_skipped = false;
++    std::string plan_package;
++    std::string plan_build;
++    const auto skip_plan = [&](std::string_view reason) {
++        LOG_WARNING(Loader,
++                    "Dual-screen package '{}' load plan not applied to {} (build {}): {}. "
++                    "Starting the game without it; companion guest actions are off",
++                    plan_package, name, plan_build, reason);
++        plan_skipped = true;
++    };
++    if (title_id) {
++        Core::Mods::LoadPlanLayout layout;
++        for (size_t i = 0; i < layout.segments.size(); ++i) {
++            layout.segments[i] = {nso_header.segments[i].location, nso_header.segments[i].size};
++        }
++        layout.bss_size = nso_header.segments[2].bss_size;
++        auto discovery =
++            Core::Mods::DiscoverModLoadPlan(system, *title_id, nso_header.build_id, name, layout);
++        plan_package = discovery.package;
++        plan_build = discovery.build;
++        if (discovery.status == Core::Mods::LoadPlanDiscovery::Status::Unsupported ||
++            discovery.status == Core::Mods::LoadPlanDiscovery::Status::Invalid) {
++            if (load_into_process) {
++                LOG_WARNING(Loader,
++                            "Dual-screen package '{}' {} load plan for {} (build {}): {}. "
++                            "Starting the game without it; companion guest actions are off",
++                            discovery.package,
++                            discovery.status == Core::Mods::LoadPlanDiscovery::Status::Invalid
++                                ? "has an invalid"
++                                : "has no matching",
++                            name, discovery.build, discovery.error);
++            }
++        }
++        if (discovery.plan) {
++            load_plan = std::move(discovery.plan);
++            if (load_plan->MailboxSize() > std::numeric_limits<u32>::max() - image_size ||
++                load_plan->MailboxSize() >
++                    std::numeric_limits<u32>::max() - codeset.DataSegment().size ||
++                load_base > std::numeric_limits<VAddr>::max() - image_size) {
++                LOG_ERROR(Loader, "Dual-screen mailbox is too large for {}", name);
++                return std::nullopt;
++            }
++            const bool reserved = mailbox_slot && mailbox_slot->size != 0;
++            if (reserved && load_into_process &&
++                (mailbox_slot->address == 0 || mailbox_slot->size < load_plan->MailboxSize())) {
++                skip_plan("its mailbox was not reserved");
++            }
++            mailbox_address = reserved ? mailbox_slot->address : load_base + image_size;
++            if (load_into_process && !plan_skipped && load_plan->GuestCodeSize() == 0) {
++                auto module_image = std::span<u8>{codeset.memory}.subspan(module_start);
++                if (!load_plan->Apply(module_image, load_base + module_start, mailbox_address)) {
++                    skip_plan("the executable's bytes differ from the plan (another game "
++                              "version or an ExeFS patch)");
++                }
++            }
++            if (!reserved) {
++                codeset.memory.resize(codeset.memory.size() + load_plan->MailboxSize());
++                codeset.DataSegment().size += static_cast<u32>(load_plan->MailboxSize());
++                image_size += static_cast<u32>(load_plan->MailboxSize());
++            }
++        }
++    }
++
++    // Reserve the helper's RX pages before NCE sees the image in either pass.
++    if (load_plan && load_plan->GuestCodeSize() != 0) {
++        const u64 code_size = load_plan->GuestCodeSize();
++        if (code_size > std::numeric_limits<u32>::max() - image_size ||
++            load_base > std::numeric_limits<VAddr>::max() - image_size - code_size) {
++            LOG_ERROR(Loader, "Dual-screen guest code is too large for {}", name);
++            return std::nullopt;
++        }
++        const auto offset = codeset.memory.size();
++        if (offset % Core::Memory::YUZU_PAGESIZE != 0) {
++            LOG_ERROR(Loader, "Dual-screen guest code placement is unaligned for {}", name);
++            return std::nullopt;
++        }
++        codeset.memory.resize(offset + code_size);
++        codeset.CompanionCodeSegment() = {offset, offset, static_cast<u32>(code_size)};
++        image_size += static_cast<u32>(code_size);
++    }
++
+     // Ocarina of Time's high refresh rate patch (Settings oot_high_refresh): where its speed scale
+     // word ended up, for the present pacing (nx2_gsv.h), and whether it applied at all.
+     constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+@@ -336,6 +475,19 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+     }
+ #endif
+ 
++    if (load_plan && load_plan->GuestCodeSize() != 0) {
++        if (load_into_process) {
++            const auto offset = codeset.CompanionCodeSegment().offset;
++            auto module_image = std::span<u8>{codeset.memory}.subspan(module_start);
++            if (!plan_skipped &&
++                !load_plan->Apply(module_image, load_base + module_start, mailbox_address,
++                                  load_base + offset)) {
++                skip_plan("the executable's bytes differ from the plan (another game version "
++                          "or an ExeFS patch)");
++            }
++        }
++    }
++
+     // If we aren't actually loading (i.e. just computing the process code layout), we are done
+     if (!load_into_process) {
+ #ifdef HAS_NCE
+@@ -363,6 +515,17 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+         if (!cheats.empty()) {
+             system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);
+         }
++        // Only "main" matters: its build id names the package's data file and its base is what
++        // "main+..." offsets are relative to. rtld loads first, so taking the first module is wrong.
++        if (nso_file.GetName() == "main") {
++            system.RegisterDualScreenMod(nso_header.build_id, load_base + module_start,
++                                         image_size - module_start);
++        }
++    }
++
++    if (load_plan && !plan_skipped) {
++        system.SetDualScreenGuestMailbox(mailbox_address, load_plan->MailboxSize(),
++                                         load_plan->MailboxEpochOffset());
+     }
+ 
+     // Load codeset for current process
+diff --git a/src/core/loader/nso.h b/src/core/loader/nso.h
+index 09d3b2e..f4dee27 100644
+--- a/src/core/loader/nso.h
++++ b/src/core/loader/nso.h
+@@ -7,6 +7,7 @@
+ 
+ #include <array>
+ #include <optional>
++#include <string>
+ #include <type_traits>
+ #include "common/common_types.h"
+ #include "common/swap.h"
+@@ -94,12 +95,31 @@ public:
+         return IdentifyType(file);
+     }
+ 
++    // Where a dual-screen load plan's mailbox lives when the title has several modules: after the
++    // LAST module, so no module moves.
++    struct DualScreenMailboxSlot {
++        u64 size = 0;          // bytes to reserve (the plan's mailbox_size), 0 = no plan
++        std::string host;      // the module that carries it (the last one loaded)
++        VAddr layout_end = 0;  // where it starts, relative to the host's own load base
++        VAddr address = 0;     // its address in the process, set before the load pass
++    };
++
++    // The module the selected dual-screen package's load plan targets ("main" unless the manifest
++    // names another), nullopt when no package has a load plan.
++    static std::optional<std::string> LoadPlanTargetModule(Core::System& system, u64 title_id);
++
++    // The mailbox size of the load plan that applies to this NSO, 0 when there is none.
++    static u64 PeekLoadPlanMailboxSize(Core::System& system, const FileSys::VfsFile& nso_file,
++                                       u64 title_id);
++
+     static std::optional<VAddr> LoadModule(Kernel::KProcess& process, Core::System& system,
+                                            const FileSys::VfsFile& nso_file, VAddr load_base,
+                                            bool should_pass_arguments, bool load_into_process,
+                                            std::optional<FileSys::PatchManager> pm = {},
+                                            std::vector<Core::NCE::Patcher>* patches = nullptr,
+-                                           s32 patch_index = -1);
++                                           s32 patch_index = -1,
++                                           std::optional<u64> title_id = std::nullopt,
++                                           DualScreenMailboxSlot* mailbox_slot = nullptr);
+ 
+     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
+ 

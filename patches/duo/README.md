@@ -14,11 +14,11 @@ Android JNI / Kotlin from Duo is **not** included. Packaging hooks stay in
 | Path | Role |
 |---|---|
 | `tree/` | Duo-only sources to copy in: `src/core/mods/`, `hle/service/dsm/`, `file_sys/duo_external_content_index.*`, `video_core/dsmod/`, `vk_dsmod_*`, companion shaders, `common/dsmod_dev_tools.h`, `hid_core/.../dsmod_pad_gate.h`, Thor `src/yuzu/duo/`, docs |
-| `hooks/0001-*.patch` … `0004-*.patch` | Fritchii-v6.1-targeted hooks (cmake, `System`, video_core stubs, Qt menus) — **`git apply --check` clean** |
+| `hooks/0001-*.patch` … `0008-*.patch` | Fritchii-v6.1-targeted hooks — **`git apply --check` clean** |
 | `thor-qt/` | Same Thor Qt sources + `main.ui` patch (also mirrored under `tree/src/yuzu/duo/`) |
 | `refs/eden-duo-vs-eden/` | Eden base `6828dc59` → Duo diffs for files still needing a **manual** Fritchii port |
 | `refs/upstream-hooks-linux.tsv` | Duo’s ledger of non-Android upstream touches |
-| `CONFLICTS.md` | What still blocks a working companion on the Thor bottom screen |
+| `CONFLICTS.md` | What still blocks full companion quality (readback / kernel epoch / …) |
 | `scripts/apply.sh` | Copy `tree/` + apply `hooks/000*.patch` |
 
 ## Apply on fritchii-v6.1
@@ -46,11 +46,13 @@ Verify:
 test -f src/core/mods/duo_core.cmake
 grep -n OnMenuInstallDuoCompanion src/yuzu/main_window.h
 grep -n duo_core.cmake src/core/CMakeLists.txt
+grep -n 'make_unique<DSModAuxPresenter>' src/video_core/renderer_vulkan/renderer_vulkan.cpp
+grep -n DualScreenMailboxSlot src/core/loader/nso.h
 ```
 
 ## What stock Duo vs Claude’s Thor build contribute
 
-**From eden-duo (engine):** `ModRuntime`, DSMod modules, loader mailbox concept,
+**From eden-duo (engine):** `ModRuntime`, DSMod modules, loader mailbox,
 `dsm:u`, Vulkan `DSModAuxPresenter` / companion quad / texture readback, desktop
 `yuzu_cmd` harness (reference only; Fritchii has no `yuzu_cmd` target in-tree).
 
@@ -63,9 +65,19 @@ grep -n duo_core.cmake src/core/CMakeLists.txt
 CLI install remains `packaging/thor/duo-companion.py` via
 `20-duo-companion.hook`.
 
+## Hooks landed for companions on screen
+
+| Patch | Role |
+|---|---|
+| `0005` | Construct `dsmod_aux`, `Composite()` Route / FitInline / companion quad through blit + WindowAdaptPass, `TakePendingScreenshot` |
+| `0006` | Aux present-thread + `TryGetRenderFrame` declaration; Swapchain `dsmod_aux` ctor (Linux no-op) |
+| `0007` | NSO mailbox / load plan / `RegisterDualScreenMod` + CompanionCodeSegment + GeneratedCode |
+| `0008` | `DSModPadGate` in `npad` |
+
 ## After apply: rebuild Thor AppImage
 
-1. Finish manual ports in `CONFLICTS.md` (loader NSO + Vulkan `Composite()` at minimum).
+1. Optionally finish remaining ports in `CONFLICTS.md` (texture-cache
+   `DSModForEachImage` / rasterizer readback, kernel application-process epoch).
 2. Build **linux-aarch64** (e.g. GitHub Actions `ubuntu-24.04-arm`). This x86_64
    environment does not produce the final AppImage.
 3. Package with sharun/Anylinux; install hooks from `packaging/thor/`:

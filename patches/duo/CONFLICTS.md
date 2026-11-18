@@ -1,12 +1,10 @@
 # Duo → Fritchii v6.1: remaining manual ports
 
 The patches under `hooks/` plus the Duo-only `tree/` apply cleanly on
-`fritchii-v6.1` (`e0f673a`). They are **not** enough for a working dual-screen
-Thor build. Stock Duo is an Eden Android fork; Fritchii v6.1 has Switch 2 /
-Lichii divergence (especially `video_core/gpu.cpp`, `rasterizer_interface.h`,
-`renderer_vulkan/*`). Eden→Duo reference diffs live in
-`refs/eden-duo-vs-eden/` (generated against Duo’s Eden base
-`6828dc59dc`).
+`fritchii-v6.1` (`e0f673a`). Stock Duo is an Eden Android fork; Fritchii v6.1 has
+Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
+`rasterizer_interface.h`, `renderer_vulkan/*`). Eden→Duo reference diffs live in
+`refs/eden-duo-vs-eden/` (generated against Duo’s Eden base `6828dc59dc`).
 
 ## Already covered (applies cleanly)
 
@@ -17,50 +15,39 @@ Lichii divergence (especially `video_core/gpu.cpp`, `rasterizer_interface.h`,
 | `System` DualScreen / ModRuntime / mailbox / input subsystem | `hooks/0002` |
 | GPU `DSModAux`, rasterizer readback stubs, `SetAuxWindow` decl/method | `hooks/0003` |
 | Thor Qt Install/Remove Duo Companion + `--duo-bottom-helper` | `hooks/0004` + `thor-qt/` / `tree/src/yuzu/duo/` |
+| Vulkan `DSModAuxPresenter` construction + `Composite()` Route / inline companion quad + `TakePendingScreenshot` | `hooks/0005` |
+| `PresentManager` force/allow present thread + `TryGetRenderFrame` decl; `Swapchain` `dsmod_aux` ctor arg | `hooks/0006` |
+| Loader NSO `DualScreenMailboxSlot` / `RegisterDualScreenMod` / mailbox + `CompanionCodeSegment` + GeneratedCode page-table | `hooks/0007` |
+| `npad` `DSModPadGate` focus-mode filter | `hooks/0008` |
 
-## Must still port by hand (blockers for companions on screen)
+## Must still port by hand
 
 Use the named file under `refs/eden-duo-vs-eden/` as the Duo-side hunk list.
 Line numbers will not match Fritchii; port by symbol.
 
-### Critical for boot + companion discovery
+### Critical for second-screen texture / GPU composite quality
 
-1. **`src/core/loader/nso.{h,cpp}`** — `DualScreenMailboxSlot`,
-   `LoadPlanTargetModule`, `PeekLoadPlanMailboxSize`, `RegisterDualScreenMod` /
-   mailbox placement after the last module. Fritchii’s NSO loader already
-   differs (Switch 2). Highest conflict risk.
-2. **`src/core/loader/deconstructed_rom_directory.cpp`** — multi-module mailbox
-   slot wiring.
-3. **`src/core/loader/nro.cpp`** — homebrew `RegisterDualScreenMod`.
-4. **`src/core/hle/service/services.cpp`** — *done* (`dsm` registered). Confirm
-   `DSM::LoopProcess` builds against Fritchii’s `RegisterHandlers` form
-   (`duo_core.cmake` auto-detects `CreateStaticMap`).
-
-### Critical for second-screen present (Vulkan)
-
-5. **`src/video_core/renderer_vulkan/renderer_vulkan.cpp`** — construct
-   `dsmod_aux = std::make_unique<DSModAuxPresenter>(…)` in the ctor; call
-   `dsmod_aux->Route` / inline companion quad from `Composite()` (see Duo
-   `renderer_vulkan.cpp.diff`). Current patch only adds `SetAuxWindow` and the
-   include; **without Composite wiring the bottom screen stays black**.
-6. **`vk_swapchain`, `vk_blit_screen`, `vk_present_manager`,
-   `present/window_adapt_pass`, `vk_rasterizer`** — DSMod aux present-queue /
-   companion quad / texture readback hooks. Reference diffs exist; Fritchii’s
-   present path has Streamline/DLSS extras.
-7. **`src/video_core/gpu.cpp`** — DSMod readback should go through
+1. **`vk_rasterizer` + texture cache `DSModForEachImage` / MarkColorTarget** —
+   `tree/` already has `vk_dsmod_texture_readback.cpp` / `vk_dsmod_rt_probe.cpp`,
+   but Fritchii’s texture cache lacks Duo’s `DSModForEachImage` helpers and the
+   rasterizer still needs override decls + `TickFrame` / draw-probe call sites.
+   Highest remaining video_core conflict with Fritchii’s OneFollower / MemStage
+   texture path.
+2. **`src/video_core/gpu.cpp`** — DSMod readback should go through
    `RequestSyncOperation` like Duo when Fritchii’s GPU thread API matches;
-   current stub calls `DSModReadbackTexture` directly.
+   current stub (0003) calls `DSModReadbackTexture` directly.
 
 ### Needed for guest hooks / input / quality
 
-8. **`src/core/hle/kernel/kernel.{h,cpp}`** — application-process lock + epoch
+3. **`src/core/hle/kernel/kernel.{h,cpp}`** — application-process lock + epoch
    (`RetainApplicationProcess`, …) — Duo divergence #4.
-9. **`src/hid_core/resources/npad/npad.cpp`** — `dsmod_pad_gate` integration.
-10. **`src/core/file_sys/registered_cache.*`** — lazy external content + Duo
-    index (optional on Linux if load paths already work).
-11. **`src/frontend_common/mod_manager.cpp`** — dualscreen folder awareness.
-12. **Android-only / skip for Thor Linux:** everything under `src/android/`,
-    JNI `dsmod_native`, Kotlin `duo.*`.
+4. **`src/core/file_sys/registered_cache.*`** — lazy external content + Duo
+   index (optional on Linux if load paths already work).
+5. **`src/frontend_common/mod_manager.cpp`** — dualscreen folder awareness.
+6. **Android-only / skip for Thor Linux:** everything under `src/android/`,
+   JNI `dsmod_native`, Kotlin `duo.*`. Android `VK_GOOGLE_display_timing`
+   stamp in `vk_swapchain::Present` was intentionally not ported (Thor Linux
+   ignores the `dsmod_aux` ctor flag).
 
 ### Deliberate Duo divergences to re-evaluate on Fritchii
 

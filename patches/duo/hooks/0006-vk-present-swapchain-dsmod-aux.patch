@@ -1,0 +1,84 @@
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.cpp b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+index ca1ffa4..4361db5 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+@@ -128,7 +128,9 @@ PresentManager::PresentManager(const vk::Instance& instance_,
+                                MemoryAllocator& memory_allocator_,
+                                Scheduler& scheduler_,
+                                Swapchain& swapchain_,
+-                               vk::SurfaceKHR& surface_)
++                               vk::SurfaceKHR& surface_,
++                               bool allow_present_thread,
++                               bool force_present_thread)
+     : instance{instance_}
+     , render_window{render_window_}
+     , device{device_}
+@@ -137,7 +139,9 @@ PresentManager::PresentManager(const vk::Instance& instance_,
+     , swapchain{swapchain_}
+     , surface{surface_}
+     , blit_supported{CanBlitToSwapchain(device.GetPhysical(), swapchain.GetImageViewFormat())}
+-    , use_present_thread{Settings::values.async_presentation.GetValue()}
++    // DSMod aux forces its own present thread so it never blocks the game's render thread.
++    , use_present_thread{force_present_thread ||
++                         (allow_present_thread && Settings::values.async_presentation.GetValue())}
+ {
+     SetImageCount();
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.h b/src/video_core/renderer_vulkan/vk_present_manager.h
+index 0c75443..2c4639b 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.h
++++ b/src/video_core/renderer_vulkan/vk_present_manager.h
+@@ -52,12 +52,18 @@ public:
+                    MemoryAllocator& memory_allocator,
+                    Scheduler& scheduler,
+                    Swapchain& swapchain,
+-                   vk::SurfaceKHR& surface);
++                   vk::SurfaceKHR& surface,
++                   bool allow_present_thread = true,
++                   bool force_present_thread = false);
+     ~PresentManager();
+ 
+     /// Returns the last used presentation frame
+     Frame* GetRenderFrame();
+ 
++    /// Ready frame without waiting, or nullptr when every frame is still queued/in flight.
++    /// Aux outputs use this so a stalled secondary surface cannot backpressure the primary.
++    Frame* TryGetRenderFrame();
++
+     /// Pushes a frame for presentation
+     void Present(Frame* frame);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.cpp b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+index 7ecdb39..d3fa6b6 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.cpp
++++ b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+@@ -120,11 +120,14 @@ Swapchain::Swapchain(
+     const Device& device_,
+     Scheduler& scheduler_,
+     u32 width_,
+-    u32 height_)
++    u32 height_,
++    bool dsmod_aux)
+     : surface(surface_)
+     , device{device_}
+     , scheduler{scheduler_}
+ {
++    // Android Duo stamps aux presents ahead via VK_GOOGLE_display_timing; Thor Linux ignores.
++    (void)dsmod_aux;
+     Create(surface, width_, height_);
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.h b/src/video_core/renderer_vulkan/vk_swapchain.h
+index cc4cf6c..f8ea353 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.h
++++ b/src/video_core/renderer_vulkan/vk_swapchain.h
+@@ -26,7 +26,8 @@ public:
+         const Device& device,
+         Scheduler& scheduler,
+         u32 width,
+-        u32 height);
++        u32 height,
++        bool dsmod_aux = false);
+     ~Swapchain();
+ 
+     /// Creates (or recreates) the swapchain with a given size.

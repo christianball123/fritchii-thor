@@ -40,9 +40,8 @@ fi
 
 echo "==> Done."
 echo
-echo "Still required before an aarch64 Thor AppImage will show companions:"
-echo "  - Manual ports listed in $ROOT/CONFLICTS.md (loader NSO mailbox,"
-echo "    Vulkan Composite()/dsmod_aux construction, kernel application-process"
-echo "    epoch, …). Use refs/eden-duo-vs-eden/*.diff as the Duo-side spec."
+echo "Still useful before an aarch64 Thor AppImage ships companions end-to-end:"
+echo "  - Remaining ports in $ROOT/CONFLICTS.md (texture-cache DSMod readback,"
+echo "    kernel application-process epoch, registered_cache, mod_manager, …)."
 echo "  - Build linux-aarch64 (GitHub Actions ubuntu-24.04-arm)."
 echo "  - Package with packaging/thor/ hooks + share/duo-modules/."

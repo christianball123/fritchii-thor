@@ -330,10 +330,7 @@ Frame* PresentManager::TryGetRenderFrame() {
     return frame;
 }
 
-// RendererBase hook, defined here so renderer_vulkan.cpp only declares it.
-void RendererVulkan::SetAuxWindow(Core::Frontend::EmuWindow* aux_window_) {
-    dsmod_aux->SetAuxWindow(aux_window_);
-}
+// SetAuxWindow lives in renderer_vulkan.cpp (null-safe); keep TryGetRenderFrame here.
 
 Layout::FramebufferLayout DSModAuxPresenter::FitInlineGameLayout(
     const Layout::FramebufferLayout& window_layout) const {

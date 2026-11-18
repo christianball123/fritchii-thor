@@ -38,7 +38,7 @@ Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/
 ## Rebuild plan (Fritchii v6.1)
 
 1. Start from `Frizti/Fritchii` tag `fritchii-v6.1`.
-2. Apply the Duo patch kit: `patches/duo/scripts/apply.sh /path/to/Fritchii` (see `patches/duo/README.md`). Finish the manual ports in `patches/duo/CONFLICTS.md` (loader NSO mailbox + Vulkan `Composite()` / `dsmod_aux` at minimum).
+2. Apply the Duo patch kit: `patches/duo/scripts/apply.sh /path/to/Fritchii` (see `patches/duo/README.md`). Loader mailbox + Vulkan `Composite()` / `dsmod_aux` are in hooks 0005–0007; optional remaining ports are in `patches/duo/CONFLICTS.md`.
 3. Build **linux-aarch64** (GitHub Actions `ubuntu-24.04-arm`, same flags as the old Lichii `thor-build` PGO job when a profile exists).
 4. Package with sharun/Anylinux (or linuxdeploy), then drop in the hooks from this folder and `share/duo-modules/`.
 5. Ship as `Fritchii-Thor-aarch64.AppImage` (keep `eden` TryExec / StartupWMClass if Steam entries already use them).

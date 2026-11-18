@@ -1,0 +1,342 @@
+diff --git a/src/video_core/renderer_base.cpp b/src/video_core/renderer_base.cpp
+index 877d3e6..ffca761 100644
+--- a/src/video_core/renderer_base.cpp
++++ b/src/video_core/renderer_base.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: 2015 Citra Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <mutex>
+ #include <thread>
+ 
+ #include "common/logging.h"
+@@ -14,6 +15,12 @@
+ 
+ namespace VideoCore {
+ 
++namespace {
++// Serializes screenshot request handoffs between the requesting threads (guest capture
++// service, frontend trigger) and the render thread that services them.
++std::mutex g_screenshot_request_mutex;
++} // namespace
++
+ RendererBase::RendererBase(Core::Frontend::EmuWindow& window_,
+                            std::unique_ptr<Core::Frontend::GraphicsContext> context_)
+     : render_window{window_}, context{std::move(context_)} {
+@@ -40,19 +47,46 @@ bool RendererBase::IsScreenshotPending() const {
+ void RendererBase::RequestScreenshot(void* data, std::function<void(bool)> callback,
+                                      const Layout::FramebufferLayout& layout,
+                                      Service::Nvnflinger::LayerStackId layer_stack) {
+-    if (renderer_settings.screenshot_requested) {
+-        LOG_ERROR(Render, "A screenshot is already requested or in progress, ignoring the request");
+-        return;
+-    }
+     auto async_callback{[callback_ = std::move(callback)](bool invert_y) {
+         std::thread t{callback_, invert_y};
+         t.detach();
+     }};
+-    renderer_settings.screenshot_bits = data;
+-    renderer_settings.screenshot_complete_callback = async_callback;
+-    renderer_settings.screenshot_framebuffer_layout = layout;
+-    renderer_settings.screenshot_layer_stack = layer_stack;
+-    renderer_settings.screenshot_requested = true;
++    std::function<void(bool)> stale;
++    {
++        std::scoped_lock lock{g_screenshot_request_mutex};
++        if (renderer_settings.screenshot_requested) {
++            // Never drop: complete the stale request now so a waiting guest capture cannot deadlock.
++            LOG_ERROR(Render, "A screenshot request was still pending; completing it early so "
++                              "the new request can proceed");
++            stale = std::move(renderer_settings.screenshot_complete_callback);
++            renderer_settings.screenshot_requested = false;
++            renderer_settings.screenshot_bits = nullptr;
++        }
++        renderer_settings.screenshot_bits = data;
++        renderer_settings.screenshot_complete_callback = async_callback;
++        renderer_settings.screenshot_framebuffer_layout = layout;
++        renderer_settings.screenshot_layer_stack = layer_stack;
++        renderer_settings.screenshot_requested = true;
++    }
++    if (stale) {
++        stale(false);
++    }
++}
++
++bool RendererBase::TakePendingScreenshot(void*& data, std::function<void(bool)>& callback,
++                                         Layout::FramebufferLayout& layout,
++                                         Service::Nvnflinger::LayerStackId& layer_stack) {
++    std::scoped_lock lock{g_screenshot_request_mutex};
++    if (!renderer_settings.screenshot_requested) {
++        return false;
++    }
++    data = renderer_settings.screenshot_bits;
++    callback = std::move(renderer_settings.screenshot_complete_callback);
++    layout = renderer_settings.screenshot_framebuffer_layout;
++    layer_stack = renderer_settings.screenshot_layer_stack;
++    renderer_settings.screenshot_bits = nullptr;
++    renderer_settings.screenshot_requested = false;
++    return true;
+ }
+ 
+ } // namespace VideoCore
+diff --git a/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp b/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp
+index 57861e2..0917ef3 100644
+--- a/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp
++++ b/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp
+@@ -26,6 +26,7 @@ namespace Vulkan {
+ WindowAdaptPass::WindowAdaptPass(const Device& device, VkFormat frame_format, vk::Sampler&& sampler_, vk::ShaderModule&& fragment_shader_)
+     : sampler(std::move(sampler_))
+     , fragment_shader(std::move(fragment_shader_))
++    , companion_renderer(device) // Eden Duo Stage 1
+ {
+     CreateDescriptorSetLayout(device);
+     CreatePipelineLayout(device);
+@@ -40,7 +41,8 @@ void WindowAdaptPass::Draw(const Device& device, MemoryAllocator& memory_allocat
+                            RasterizerVulkan& rasterizer, Scheduler& scheduler, size_t image_index,
+                            std::list<Layer>& layers,
+                            std::span<const Tegra::FramebufferConfig> configs,
+-                           const Layout::FramebufferLayout& layout, Frame* dst) {
++                           const Layout::FramebufferLayout& layout, Frame* dst,
++                           const CompanionQuad* companion) {
+ 
+     const VkFramebuffer host_framebuffer{*dst->framebuffer};
+     const VkRenderPass renderpass{*render_pass};
+@@ -116,7 +118,11 @@ void WindowAdaptPass::Draw(const Device& device, MemoryAllocator& memory_allocat
+     const VkDescriptorSet mark_set = mark_draw ? test_mark.sets[0] : VkDescriptorSet{};
+     const PresentPushConstants mark_push = test_mark_push;
+ 
+-    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
++    // Eden Duo Stage 1: companion quad sampled after game layers, before the test mark.
++    const CompanionQuadRenderer::Draw companion_draw =
++        companion_renderer.Prepare(device, scheduler, *descriptor_set_layout, layout, companion);
++
++    scheduler.Record([=, this](vk::CommandBuffer cmdbuf) {
+         const f32 bg_red = Settings::values.bg_red.GetValue() / 255.0f;
+         const f32 bg_green = Settings::values.bg_green.GetValue() / 255.0f;
+         const f32 bg_blue = Settings::values.bg_blue.GetValue() / 255.0f;
+@@ -150,6 +156,10 @@ void WindowAdaptPass::Draw(const Device& device, MemoryAllocator& memory_allocat
+             cmdbuf.Draw(4, 1, 0, 0);
+         }
+ 
++        // Coverage pipeline matches Duo's overlay path for companion UI content.
++        companion_renderer.Record(cmdbuf, graphics_pipeline_layout, *coverage_pipeline,
++                                  companion_draw);
++
+         if (!mark_text.empty()) {
+             const auto attachment = [](const float (&c)[4]) {
+                 return VkClearAttachment{
+diff --git a/src/video_core/renderer_vulkan/present/window_adapt_pass.h b/src/video_core/renderer_vulkan/present/window_adapt_pass.h
+index 6ff9cf9..8f30ac5 100644
+--- a/src/video_core/renderer_vulkan/present/window_adapt_pass.h
++++ b/src/video_core/renderer_vulkan/present/window_adapt_pass.h
+@@ -9,6 +9,7 @@
+ #include <vector>
+ 
+ #include "common/math_util.h"
++#include "video_core/renderer_vulkan/present/dsmod_companion_quad.h" // Eden Duo Stage 1
+ #include "video_core/renderer_vulkan/present/present_push_constants.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
+@@ -35,10 +36,12 @@ public:
+                              vk::ShaderModule&& fragment_shader);
+     ~WindowAdaptPass();
+ 
++    /// `companion`: Eden Duo Stage 1; null or empty pane draws nothing extra.
+     void Draw(const Device& device, MemoryAllocator& memory_allocator, RasterizerVulkan& rasterizer,
+               Scheduler& scheduler, size_t image_index, std::list<Layer>& layers,
+               std::span<const Tegra::FramebufferConfig> configs,
+-              const Layout::FramebufferLayout& layout, Frame* dst);
++              const Layout::FramebufferLayout& layout, Frame* dst,
++              const CompanionQuad* companion = nullptr);
+ 
+     VkDescriptorSetLayout GetDescriptorSetLayout();
+     VkRenderPass GetRenderPass();
+@@ -90,6 +93,9 @@ private:
+     u64 test_mark_version = 0;           ///< TestWatermark::Blocks::version last seen
+     bool test_mark_ready = false;        ///< test_mark_push and test_mark hold the current mark
+     PresentPushConstants test_mark_push{};
++
++    // Eden Duo Stage 1: companion quad descriptor/sampler and draw steps.
++    CompanionQuadRenderer companion_renderer;
+ };
+ 
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index 821b07d..0ffc70b 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <cstring>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ #include <string>
+@@ -214,6 +215,8 @@ try
+     VideoCore::FxChain::Instance().LoadFromSettings();
+ #endif
+ 
++    dsmod_aux = std::make_unique<DSModAuxPresenter>(gpu, device_memory, instance, device,
++                                                    memory_allocator, scheduler, rasterizer);
+     Report();
+ } catch (const vk::Exception& exception) {
+     LOG_ERROR(Render_Vulkan, "Vulkan initialization failed with error: {}", exception.what());
+@@ -243,22 +246,39 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
+ 
+     RenderAppletCaptureLayer(framebuffers);
+ 
+-    if (!render_window.IsShown()) {
++    // DSMod: present the aux (second screen) output; `primary` stays on this window.
++    // Stage 1 (Simulated/inline dual screen): main window layout lets Route() turn AuxRouting's
++    // inline fractions into this frame's companion-pane pixels.
++    const auto primary = dsmod_aux->Route(framebuffers, render_window.GetFramebufferLayout());
++
++    // Screenshots are serviced even when the window is hidden or occluded.
++    if (!framebuffers.empty()) {
++        RenderScreenshot(framebuffers, primary);
++    }
++
++    if (DSModAuxPresenter::PrimaryPresentDisabled() || !render_window.IsShown() ||
++        primary.empty()) {
++        gpu.RendererFrameEndNotify();
++        rasterizer.TickFrame();
+         return;
+     }
+ 
+-    RenderScreenshot(framebuffers);
+     const auto acquiring = trace ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
+     Frame* frame = present_manager.GetRenderFrame();
+     const auto acquired = trace ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
+ 
++    // Stage 1: fit the game into its own rect when inline dual screen is active.
++    const Layout::FramebufferLayout layout =
++        dsmod_aux->FitInlineGameLayout(render_window.GetFramebufferLayout());
++    const auto companion_quad = dsmod_aux->GetInlineCompanionQuad();
++
+     scheduler.RequestOutsideRenderPassOperationContext();
+-    blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
+-                               render_window.GetFramebufferLayout(),
++    blit_swapchain.DrawToFrame(device, rasterizer, frame, primary, layout,
+                                present_manager.SwapchainImageCount(),
+-                               swapchain.GetImageViewFormat());
++                               swapchain.GetImageViewFormat(), &companion_quad);
++    dsmod_aux->NoteInlineSampled(scheduler.CurrentTick());
+ 
+     if (trace) {
+         scheduler.MarkFrameEnd(++trace_frame);
+@@ -377,22 +397,30 @@ vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConf
+     return dst_buffer;
+ }
+ 
+-void RendererVulkan::RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers) {
+-    if (!renderer_settings.screenshot_requested) {
++void RendererVulkan::RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers,
++                                      std::span<const Tegra::FramebufferConfig> primary) {
++    void* bits{};
++    std::function<void(bool)> callback;
++    Layout::FramebufferLayout layout{};
++    Service::Nvnflinger::LayerStackId layer_stack{};
++    if (!TakePendingScreenshot(bits, callback, layout, layer_stack)) {
+         return;
+     }
+ 
+-    const auto screenshot_layers = Tegra::FilterLayerStack(
+-        framebuffers, renderer_settings.screenshot_layer_stack, screenshot_layer_scratch);
++    LOG_INFO(Render_Vulkan, "servicing screenshot request {}x{}", layout.width, layout.height);
++    // Frontend captures describe the primary screen after Duo routing. Guest captures select
++    // their own layer stack from the original composition, including a layer routed to aux.
++    const auto source = layer_stack == Service::Nvnflinger::LayerStackId::Default
++                            ? primary
++                            : framebuffers;
++    const auto screenshot_layers =
++        Tegra::FilterLayerStack(source, layer_stack, screenshot_layer_scratch);
+ 
+-    const auto& layout{renderer_settings.screenshot_framebuffer_layout};
+     const auto dst_buffer = RenderToBuffer(screenshot_layers, layout, VK_FORMAT_B8G8R8A8_UNORM,
+                                            layout.width * layout.height * 4);
+ 
+-    std::memcpy(renderer_settings.screenshot_bits, dst_buffer.Mapped().data(),
+-                dst_buffer.Mapped().size());
+-    renderer_settings.screenshot_complete_callback(false);
+-    renderer_settings.screenshot_requested = false;
++    std::memcpy(bits, dst_buffer.Mapped().data(), dst_buffer.Mapped().size());
++    callback(false);
+ }
+ 
+ std::vector<u8> RendererVulkan::GetAppletCaptureBuffer() {
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.h b/src/video_core/renderer_vulkan/renderer_vulkan.h
+index 081cc3b..535f52d 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.h
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.h
+@@ -61,6 +61,8 @@ public:
+     [[nodiscard]] VideoCore::DlssStatus GetDlssStatus() const override;
+ #endif
+ 
++    void SetAuxWindow(Core::Frontend::EmuWindow* aux_window_) override;
++
+     // Enhanced platform-specific initialization
+     void InitializePlatformSpecific();
+ 
+@@ -76,7 +78,8 @@ private:
+     vk::Buffer RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
+                               const Layout::FramebufferLayout& layout, VkFormat format,
+                               VkDeviceSize buffer_size);
+-    void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers);
++    void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers,
++                          std::span<const Tegra::FramebufferConfig> primary);
+     void RenderAppletCaptureLayer(std::span<const Tegra::FramebufferConfig> framebuffers);
+ 
+     std::vector<Tegra::FramebufferConfig> applet_capture_layers;
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.cpp b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+index f42e745..f00aaf2 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.cpp
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+@@ -90,7 +90,8 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
+                              std::span<const Tegra::FramebufferConfig> framebuffers,
+                              const Layout::FramebufferLayout& layout,
+                              size_t current_swapchain_image_count,
+-                             VkFormat current_swapchain_view_format) {
++                             VkFormat current_swapchain_view_format,
++                             const CompanionQuad* companion) {
+     bool resource_update_required = false;
+     bool presentation_recreate_required = false;
+ 
+@@ -139,7 +140,7 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
+     // count apart, bracketed in recording order on the worker (one TLS load each while off).
+     scheduler.Record([](vk::CommandBuffer) { vk::NotePresentPass(true); });
+     window_adapt->Draw(device, memory_allocator, rasterizer, scheduler, image_index, layers,
+-                       framebuffers, layout, frame);
++                       framebuffers, layout, frame, companion);
+     scheduler.Record([](vk::CommandBuffer) { vk::NotePresentPass(false); });
+ 
+     if (++image_index >= image_count) {
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.h b/src/video_core/renderer_vulkan/vk_blit_screen.h
+index fd6cc39..bfb5266 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.h
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.h
+@@ -35,6 +35,7 @@ class RasterizerVulkan;
+ class Scheduler;
+ class PresentManager;
+ class WindowAdaptPass;
++struct CompanionQuad; // Eden Duo Stage 1, see present/dsmod_companion_quad.h
+ 
+ struct Frame;
+ 
+@@ -56,10 +57,13 @@ public:
+                         Scheduler& scheduler, const PresentFilters& filters);
+     ~BlitScreen();
+ 
++    /// `companion`: Eden Duo Stage 1 (Simulated/inline dual screen), forwarded to
++    /// WindowAdaptPass::Draw; null draws nothing extra.
+     void DrawToFrame(const Device& device, RasterizerVulkan& rasterizer, Frame* frame,
+                      std::span<const Tegra::FramebufferConfig> framebuffers,
+                      const Layout::FramebufferLayout& layout, size_t current_swapchain_image_count,
+-                     VkFormat current_swapchain_view_format);
++                     VkFormat current_swapchain_view_format,
++                     const CompanionQuad* companion = nullptr);
+ 
+     [[nodiscard]] vk::Framebuffer CreateFramebuffer(const Device& device, const Layout::FramebufferLayout& layout,
+                                                     VkImageView image_view,
