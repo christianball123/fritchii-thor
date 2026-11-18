@@ -52,14 +52,24 @@ Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/
    `00-custom-odin.hook`, clock-max, Duo companion CLI, and `duo-modules/*.so`.
 5. Ship as `Fritchii-Thor-aarch64.AppImage` (keep `eden` TryExec / StartupWMClass).
 
-### GitHub Actions
+### GitHub Actions (how to get the AppImage)
 
 Workflow: `.github/workflows/fritchii-thor-aarch64.yml` (manual dispatch on
-`ubuntu-24.04-arm`). Origin does not run GitHub Actions — mirror this repo to
-GitHub or copy `patches/duo` + `packaging/thor` into a Frizti/Fritchii fork and
-run the workflow there. Artifact: `Fritchii-Thor-aarch64.AppImage`.
+`ubuntu-24.04-arm`). Origin does not run GitHub Actions.
+
+**Fastest path on your GitHub account:**
+
+1. Create a private GitHub repo (e.g. `christianball123/fritchii-thor`) and push
+   this memvault `main` (or at least `patches/duo`, `packaging/thor`, and the
+   workflow file).
+2. Actions → **fritchii-thor-aarch64** → Run workflow (ref `fritchii-v6.1`).
+3. Download the `Fritchii-Thor-aarch64` artifact, `chmod +x`, replace your
+   existing Thor AppImage path (Steam ROM Manager can keep the same target).
+
+First launch still offers the one-time clock-max sudo/pkexec setup. Duo:
+`./Fritchii-Thor-aarch64.AppImage --install-companion Game.dsmod.zip`.
 
 Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built
-on arm64 CI (not this x86_64 agent). The older Claude AppImage used sharun;
+on arm64 CI (not the x86_64 cloud agent). The older Claude AppImage used sharun;
 `AppRun.sh` / `AppRun.lib` remain for that layout. New builds use linuxdeploy +
 `AppRun` (same hooks).
