@@ -1,0 +1,16 @@
+diff --git a/src/core/perf_stats.cpp b/src/core/perf_stats.cpp
+--- a/src/core/perf_stats.cpp
++++ b/src/core/perf_stats.cpp
+@@ -216,10 +216,10 @@ void SpeedLimiter::DoSpeedLimiting(microseconds current_system_time_us) {
+     previous_walltime = now;
+ }
+ 
+-} // namespace Core
+-
+ PerfStats::Totals PerfStats::GetTotals() const {
+     std::scoped_lock lock{object_mutex};
+     return {total_game_frames.load(std::memory_order_relaxed), total_system_frames,
+             total_frametime};
+ }
++
++} // namespace Core

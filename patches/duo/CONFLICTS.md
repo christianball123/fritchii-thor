@@ -25,6 +25,11 @@ Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 | Kernel `RetainApplicationProcess` / epoch + `application_process_lock` (+ pad-gate on process swap) | `hooks/0012` |
 | `registered_cache` mutex + lazy `EnsureScanned` + Duo external content index | `hooks/0013` |
 | `mod_manager` `dualscreen` folder awareness | `hooks/0014` |
+| `common/thread.cpp` `nx2_debug_control.h` for aarch64 EXP103 | `hooks/0017` |
+| `PerfStats::GetTotals` definition inside `namespace Core` | `hooks/0015` |
+| `AppLoader::GetFile` + `OpenProgramNcaFromGameFile` (Duo private RomFS) | `hooks/0016` |
+| `video_core` `-frtti` (Fritchii `-fno-rtti` vs `dynamic_cast`) | `tree/…/duo_video_core.cmake` |
+| Aux `RecreateFrame` without Duo `storage` flag | `tree/…/vk_dsmod_aux.cpp` |
 
 ## Must still port by hand / out of Thor Linux scope
 

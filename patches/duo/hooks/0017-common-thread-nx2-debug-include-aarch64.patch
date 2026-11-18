@@ -1,0 +1,30 @@
+From: Cursor Agent <cursoragent@cursor.com>
+Subject: [PATCH] Include nx2_debug_control.h on aarch64 for WaitForFlag EXP103
+
+Stock fritchii-v6.1 only pulls video_core/nx2_debug_control.h under
+ARCHITECTURE_x86_64, but WaitForFlag uses VideoCore::Nx2Debug::Experiment(103)
+unconditionally — arm64 Thor CI fails to compile common/thread.cpp.
+
+---
+ src/common/thread.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/common/thread.cpp b/src/common/thread.cpp
+--- a/src/common/thread.cpp
++++ b/src/common/thread.cpp
+@@ -455,14 +455,14 @@ void RememberCurrentThreadNice(pid_t tid, s32 nice_value) {
+ #endif
+ 
+ #include "common/cpu_features.h"
++#include "video_core/nx2_debug_control.h"
+ #ifdef ARCHITECTURE_x86_64
+ #ifdef _MSC_VER
+ #include <intrin.h>
+ #else
+ #include <x86intrin.h>
+ #endif
+ #include "common/x64/rdtsc.h"
+-#include "video_core/nx2_debug_control.h"
+ #endif
+ 
+ #ifdef _WIN32

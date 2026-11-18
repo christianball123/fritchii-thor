@@ -1,0 +1,85 @@
+diff --git a/src/core/file_sys/romfs_factory.cpp b/src/core/file_sys/romfs_factory.cpp
+index 164b699f9..4fe70b4ae 100644
+--- a/src/core/file_sys/romfs_factory.cpp
++++ b/src/core/file_sys/romfs_factory.cpp
+@@ -8,17 +8,47 @@
+ #include "common/common_types.h"
+ #include "common/logging.h"
+ #include "core/file_sys/common_funcs.h"
++#include "core/file_sys/card_image.h"
+ #include "core/file_sys/content_archive.h"
+ #include "core/file_sys/nca_metadata.h"
+ #include "core/file_sys/patch_manager.h"
+ #include "core/file_sys/registered_cache.h"
+ #include "core/file_sys/romfs_factory.h"
++#include "core/file_sys/submission_package.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/loader/loader.h"
+ 
+ namespace FileSys {
+ 
++std::shared_ptr<NCA> OpenProgramNcaFromGameFile(const VirtualFile& file, u64 program_id) {
++    if (file == nullptr) {
++        return nullptr;
++    }
++    std::shared_ptr<NCA> nca;
++    switch (Loader::IdentifyFile(file)) {
++    case Loader::FileType::NCA:
++        nca = std::make_shared<NCA>(file);
++        break;
++    case Loader::FileType::NSP:
++        nca = NSP(file).GetNCA(program_id, ContentRecordType::Program);
++        break;
++    case Loader::FileType::XCI:
++        if (const auto nsp = XCI(file, program_id).GetSecurePartitionNSP()) {
++            nca = nsp->GetNCA(program_id, ContentRecordType::Program);
++        }
++        break;
++    default:
++        return nullptr;
++    }
++    if (nca == nullptr || nca->GetStatus() != Loader::ResultStatus::Success ||
++        nca->GetType() != NCAContentType::Program || nca->IsUpdate() ||
++        nca->GetTitleId() != program_id) {
++        return nullptr;
++    }
++    return nca;
++}
++
+ RomFSFactory::RomFSFactory(Loader::AppLoader& app_loader, ContentProvider& provider,
+                            Service::FileSystem::FileSystemController& controller)
+     : content_provider{provider}, filesystem_controller{controller} {
+diff --git a/src/core/file_sys/romfs_factory.h b/src/core/file_sys/romfs_factory.h
+index 37df8894a..eeaede5fb 100644
+--- a/src/core/file_sys/romfs_factory.h
++++ b/src/core/file_sys/romfs_factory.h
+@@ -32,6 +32,12 @@ enum class StorageId : u8 {
+     SdCard = 5,
+ };
+ 
++/// Opens a fresh (unshared) NCA object for the base Program content `program_id` inside a bootable
++/// game file (NCA, NSP or XCI). Used by Duo ModRuntime private RomFS. Returns null when the file
++/// holds no valid, non-update Program NCA for that title.
++[[nodiscard]] std::shared_ptr<NCA> OpenProgramNcaFromGameFile(const VirtualFile& file,
++                                                              u64 program_id);
++
+ /// File system interface to the RomFS archive
+ class RomFSFactory {
+ public:
+diff --git a/src/core/loader/loader.h b/src/core/loader/loader.h
+index 351152366..bb5f33d3b 100644
+--- a/src/core/loader/loader.h
++++ b/src/core/loader/loader.h
+@@ -356,6 +356,11 @@ public:
+         return ResultStatus::ErrorNotImplemented;
+     }
+ 
++    /// The file this loader was created from. (Eden Duo)
++    [[nodiscard]] const FileSys::VirtualFile& GetFile() const {
++        return file;
++    }
++
+ protected:
+     FileSys::VirtualFile file;
+     bool is_loaded = false;
