@@ -162,12 +162,12 @@ bool DumpCompanionFiles(QWidget* parent, u64 title_id, const QString& title_name
         return false;
     }
     const QString target =
-        dest + QChar('/') +
+        dest + QLatin1Char('/') +
         (title_name.isEmpty() ? QString::asprintf("%016llX", static_cast<unsigned long long>(title_id))
                               : title_name);
     QDir().mkpath(target);
     for (const QFileInfo& fi : src.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        const QString to = target + QChar('/') + fi.fileName();
+        const QString to = target + QLatin1Char('/') + fi.fileName();
         QDir(to).removeRecursively();
         // Qt 6.3+: QDir::copyRecursively; fall back to process cp -a on Linux.
         QProcess::execute(QStringLiteral("cp"), {QStringLiteral("-a"), fi.absoluteFilePath(), to});

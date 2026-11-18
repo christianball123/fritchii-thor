@@ -33,6 +33,7 @@ Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 | DuoQt includes in `main.cpp` / `main_window.cpp` | `hooks/0020` |
 | `video_core` `-frtti` (Fritchii `-fno-rtti` vs `dynamic_cast`) | `tree/…/duo_video_core.cmake` |
 | Aux `RecreateFrame` without Duo `storage` flag | `tree/…/vk_dsmod_aux.cpp` |
+| Qt6 `QLatin1Char('/')` (not `QChar('/')`) in companion menus | `tree/…/duo_companion_menus.cpp` |
 | Thor aarch64: `-DENABLE_WERROR=OFF` + selected `-Wno-error=*` | `packaging/thor/scripts/configure-thor.sh` |
 
 ## Must still port by hand / out of Thor Linux scope
