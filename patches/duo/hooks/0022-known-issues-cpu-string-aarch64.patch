@@ -1,0 +1,18 @@
+diff --git a/src/yuzu/fritchii/known_issues.cpp b/src/yuzu/fritchii/known_issues.cpp
+index df7561402..649661d70 100644
+--- a/src/yuzu/fritchii/known_issues.cpp
++++ b/src/yuzu/fritchii/known_issues.cpp
+@@ -37,8 +37,13 @@ bool NvidiaCard(const std::vector<VkDeviceInfo::Record>& records) {
+ }
+ 
+ bool IntelCpu() {
++#if defined(ARCHITECTURE_x86_64)
+     const std::string name = Common::g_cpu_caps.cpu_string;
+     return name.find("Intel") != std::string::npos;
++#else
++    // aarch64 CPUCaps is a stub (no cpu_string); Thor/Snapdragon never needs the Intel note.
++    return false;
++#endif
+ }
+ 
+ /// Only what current builds show (owner 2026-11-18: no outdated items).
