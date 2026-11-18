@@ -1,0 +1,118 @@
+--- /tmp/src/eden-base/src/core/hle/kernel/kernel.cpp	2026-11-18 19:50:26.009971226 +0000
++++ /tmp/src/eden-duo/src/core/hle/kernel/kernel.cpp	2026-11-18 19:38:06.983848302 +0000
+@@ -48,6 +48,8 @@
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/memory.h"
++#include "hid_core/resources/npad/dsmod_pad_gate.h"
++#include "video_core/gpu.h"
+ 
+ namespace Kernel {
+ 
+@@ -113,6 +115,9 @@
+     }
+ 
+     void Initialize(KernelCore& kernel) {
++        if (system.ModRuntime() == nullptr) {
++            Core::HID::DSModPadGate::BlockForContextChange(false);
++        }
+         hardware_timer.emplace(kernel);
+         hardware_timer->Initialize();
+ 
+@@ -161,9 +166,9 @@
+ 
+         CloseServices();
+ 
+-        if (application_process) {
+-            application_process->Close(system.Kernel());
+-            application_process = nullptr;
++        SetApplicationProcess(kernel, nullptr);
++        if (system.ModRuntime() == nullptr) {
++            Core::HID::DSModPadGate::BlockForContextChange(false);
+         }
+ 
+         next_object_id = 0;
+@@ -375,17 +380,28 @@
+     }
+ 
+     void SetApplicationProcess(KernelCore& kernel, KProcess* process) {
+-        if (application_process == process)
+-            return;
+-
+-        KProcess* const previous = application_process;
+-        application_process = process;
+-
+-        if (application_process != nullptr)
+-            application_process->Open(kernel);
+-
+-        if (previous != nullptr)
++        KProcess* previous;
++        {
++            std::scoped_lock lock{application_process_lock};
++            if (application_process == process) {
++                return;
++            }
++            if (process != nullptr) {
++                process->Open(kernel);
++            }
++            // Block HID before publishing a new application identity. The old runtime clears
++            // this only after releasing its synthetic inputs; navigation cannot override it.
++            if (application_process != nullptr && system.ModRuntime() != nullptr &&
++                system.GPU().DSModAux().companion_context_active.load(std::memory_order_acquire)) {
++                Core::HID::DSModPadGate::BlockForContextChange(true);
++            }
++            previous = std::exchange(application_process, process);
++            ++application_process_epoch;
++        }
++        // Closing may destroy the process and reenter kernel bookkeeping.
++        if (previous != nullptr) {
+             previous->Close(kernel);
++        }
+     }
+ 
+     /// Sets the host thread ID for the caller.
+@@ -802,7 +818,9 @@
+     // Lists all processes that exist in the current session.
+     std::mutex process_list_lock;
+     std::vector<KProcess*> process_list;
++    std::mutex application_process_lock;
+     KProcess* application_process{};
++    u64 application_process_epoch{};
+     std::optional<Kernel::GlobalSchedulerContext> global_scheduler_context;
+     std::optional<Kernel::KHardwareTimer> hardware_timer;
+ 
+@@ -918,13 +936,34 @@
+ }
+ 
+ KProcess* KernelCore::ApplicationProcess() {
++    std::scoped_lock lock{impl->application_process_lock};
+     return impl->application_process;
+ }
+ 
+ const KProcess* KernelCore::ApplicationProcess() const {
++    std::scoped_lock lock{impl->application_process_lock};
+     return impl->application_process;
+ }
+ 
++KScopedAutoObject<KProcess> KernelCore::RetainApplicationProcess(u64* owner_epoch) {
++    std::scoped_lock lock{impl->application_process_lock};
++    if (owner_epoch != nullptr) {
++        *owner_epoch = impl->application_process_epoch;
++    }
++    return {*this, impl->application_process};
++}
++
++bool KernelCore::IsApplicationProcess(const KProcess* process) const {
++    std::scoped_lock lock{impl->application_process_lock};
++    return process != nullptr && impl->application_process == process;
++}
++
++bool KernelCore::IsApplicationProcess(const KProcess* process, u64 owner_epoch) const {
++    std::scoped_lock lock{impl->application_process_lock};
++    return process != nullptr && impl->application_process == process &&
++           impl->application_process_epoch == owner_epoch;
++}
++
+ KScopedAutoObject<KProcess> KernelCore::GetProcessByProcessId(u64 process_id) {
+     std::scoped_lock lk{impl->process_list_lock};
+     for (auto* const process : impl->process_list)

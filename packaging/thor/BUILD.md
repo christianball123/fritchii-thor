@@ -38,9 +38,9 @@ Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/
 ## Rebuild plan (Fritchii v6.1)
 
 1. Start from `Frizti/Fritchii` tag `fritchii-v6.1`.
-2. Re-merge Eden Duo (`igawa6/eden-duo`): `src/core/mods`, loader dual-screen hooks, `video_core` DSMod / aux Vulkan surface, Qt “Install Duo Companion” menus, Linux bottom-screen helper.
+2. Apply the Duo patch kit: `patches/duo/scripts/apply.sh /path/to/Fritchii` (see `patches/duo/README.md`). Finish the manual ports in `patches/duo/CONFLICTS.md` (loader NSO mailbox + Vulkan `Composite()` / `dsmod_aux` at minimum).
 3. Build **linux-aarch64** (GitHub Actions `ubuntu-24.04-arm`, same flags as the old Lichii `thor-build` PGO job when a profile exists).
 4. Package with sharun/Anylinux (or linuxdeploy), then drop in the hooks from this folder and `share/duo-modules/`.
 5. Ship as `Fritchii-Thor-aarch64.AppImage` (keep `eden` TryExec / StartupWMClass if Steam entries already use them).
 
-Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built here.
+Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built on arm64 CI (not this x86_64 agent).

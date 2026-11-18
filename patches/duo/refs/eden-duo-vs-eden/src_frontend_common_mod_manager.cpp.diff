@@ -1,0 +1,17 @@
+--- /tmp/src/eden-base/src/frontend_common/mod_manager.cpp	2026-11-18 19:50:26.065971222 +0000
++++ /tmp/src/eden-duo/src/frontend_common/mod_manager.cpp	2026-11-18 19:35:16.748652453 +0000
+@@ -18,11 +18,12 @@
+ 
+     auto callback = [&paths](const std::filesystem::directory_entry& entry) -> bool {
+         const auto name = entry.path().filename().string();
+-        static const std::array<std::string, 5> valid_names = {"exefs",
++        static const std::array<std::string, 6> valid_names = {"exefs",
+                                                                "romfs",
+                                                                "romfs_ext",
+                                                                "cheats",
+-                                                               "romfslite"};
++                                                               "romfslite",
++                                                              "dualscreen"};
+ 
+         if (std::ranges::find(valid_names, name) != valid_names.end()) {
+             const auto parent = entry.path().parent_path();

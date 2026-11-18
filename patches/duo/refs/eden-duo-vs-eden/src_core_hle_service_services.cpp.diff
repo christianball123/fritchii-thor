@@ -1,0 +1,18 @@
+--- /tmp/src/eden-base/src/core/hle/service/services.cpp	2026-11-18 19:50:26.037971224 +0000
++++ /tmp/src/eden-duo/src/core/hle/service/services.cpp	2026-11-18 19:38:07.011848060 +0000
+@@ -13,6 +13,7 @@
+ #include "core/hle/service/audio/audio.h"
+ #include "core/hle/service/bcat/bcat.h"
+ #include "core/hle/service/bpc/bpc.h"
++#include "core/hle/service/dsm/dsm.h"
+ #include "core/hle/service/btdrv/btdrv.h"
+ #include "core/hle/service/btm/btm.h"
+ #include "core/hle/service/caps/caps.h"
+@@ -106,6 +107,7 @@
+         {"apm",        &APM::LoopProcess},
+         {"bcat",       &BCAT::LoopProcess},
+         {"bpc",        &BPC::LoopProcess},
++        {"dsm",        &DSM::LoopProcess},
+         {"btdrv",      &BtDrv::LoopProcess},
+         {"btm",        &BTM::LoopProcess},
+         {"capsrv",     &Capture::LoopProcess},

@@ -1,0 +1,9 @@
+--- /tmp/src/eden-base/src/core/CMakeLists.txt	2026-11-18 19:50:25.973971230 +0000
++++ /tmp/src/eden-duo/src/core/CMakeLists.txt	2026-11-18 19:38:06.951848578 +0000
+@@ -1278,4 +1278,6 @@
+     target_sources(core PRIVATE hle/service/ssl/ssl_backend_openssl.cpp)
+ endif()
+ 
++include(mods/duo_core.cmake) # Eden Duo: dual-screen runtime sources
++
+ create_target_directory_groups(core)

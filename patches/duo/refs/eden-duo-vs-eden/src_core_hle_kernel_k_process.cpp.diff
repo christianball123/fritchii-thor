@@ -1,0 +1,24 @@
+--- /tmp/src/eden-base/src/core/hle/kernel/k_process.cpp	2026-11-18 19:50:26.009971226 +0000
++++ /tmp/src/eden-duo/src/core/hle/kernel/k_process.cpp	2026-11-18 19:38:06.983848302 +0000
+@@ -1278,8 +1278,21 @@
+     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
+     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);
+     ReprotectSegment(code_set.DataSegment(), Svc::MemoryPermission::ReadWrite);
++    const auto& companion_code = code_set.CompanionCodeSegment();
++    if (companion_code.size != 0) {
++        // Native rtld treats RX Code mappings as NSOs and requires MOD0 headers.
++        // Seal this non-module allocation as GeneratedCode without an RWX phase.
++        ASSERT(m_page_table.GetBasePageTable().SetProcessMemoryPermission(
++                   companion_code.addr + base_addr, companion_code.size,
++                   Svc::MemoryPermission::ReadExecute, true).IsSuccess());
++    }
+ 
+ #ifdef HAS_NCE
++    if (this->IsApplication() && Settings::IsNceEnabled() && companion_code.size != 0) {
++        kernel.System().DeviceMemory().buffer.Protect(
++            GetInteger(base_addr + companion_code.addr), companion_code.size,
++            Common::MemoryPermission::Read | Common::MemoryPermission::Execute);
++    }
+     const auto& patch = code_set.PatchSegment();
+     const auto& post_patch = code_set.PostPatchSegment();
+     if (this->IsApplication() && Settings::IsNceEnabled() && patch.size != 0) {

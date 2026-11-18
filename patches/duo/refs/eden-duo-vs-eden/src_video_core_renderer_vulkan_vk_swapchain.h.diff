@@ -1,0 +1,23 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/vk_swapchain.h	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/vk_swapchain.h	2026-11-18 19:46:44.638057759 +0000
+@@ -27,7 +27,8 @@
+         const Device& device,
+         Scheduler& scheduler,
+         u32 width,
+-        u32 height);
++        u32 height,
++        bool dsmod_aux = false);
+     ~Swapchain();
+ 
+     /// Creates (or recreates) the swapchain with a given size.
+@@ -111,6 +112,10 @@
+ 
+ private:
+     void CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities);
++
++    /// The DSMod second screen: stamp every present slightly ahead (see Present).
++    bool explicit_present_time{};
++    u32 present_id{};
+     void CreateSemaphores();
+     void CreateImageViews();
+ 

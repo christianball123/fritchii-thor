@@ -1,0 +1,10 @@
+--- /tmp/src/eden-base/src/core/hle/service/nvnflinger/display.h	2026-11-18 19:50:26.033971225 +0000
++++ /tmp/src/eden-duo/src/core/hle/service/nvnflinger/display.h	2026-11-18 19:38:07.007848095 +0000
+@@ -27,6 +27,7 @@
+     bool visible;
+     s32 z_index;
+     bool is_overlay;
++    u64 layer_id{}; // VI layer id, for DSMod aux routing
+     u32 layer_stack_mask;
+ };
+ 

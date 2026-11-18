@@ -1,0 +1,195 @@
+--- /tmp/src/eden-base/src/core/file_sys/registered_cache.cpp	2026-11-18 19:50:25.981971230 +0000
++++ /tmp/src/eden-duo/src/core/file_sys/registered_cache.cpp	2026-11-18 19:38:06.955848544 +0000
+@@ -24,6 +24,7 @@
+ #include "core/file_sys/control_metadata.h"
+ #include "core/file_sys/nca_metadata.h"
+ #include "core/file_sys/registered_cache.h"
++#include "core/file_sys/duo_external_content_index.h" // Eden Duo
+ #include "core/file_sys/romfs.h"
+ #include "core/file_sys/submission_package.h"
+ #include "core/file_sys/vfs/vfs_concat.h"
+@@ -1250,12 +1251,14 @@
+ ManualContentProvider::~ManualContentProvider() = default;
+ 
+ void ManualContentProvider::AddEntry(TitleType title_type, ContentRecordType content_type, u64 title_id, VirtualFile file) {
++    std::scoped_lock lock{mutex};
+     entries.insert_or_assign({title_type, content_type, title_id}, file);
+ }
+ 
+ void ManualContentProvider::AddEntryWithVersion(TitleType title_type, ContentRecordType content_type,
+                                                 u64 title_id, u32 version,
+                                                 const std::string& version_string, VirtualFile file) {
++    std::scoped_lock lock{mutex};
+     if (title_type == TitleType::Update) {
+         auto it = std::find_if(multi_version_entries.begin(), multi_version_entries.end(), [title_id, version](const ExternalUpdateEntry& entry) {
+             return entry.title_id == title_id && entry.version == version;
+@@ -1321,6 +1324,7 @@
+ }
+ 
+ void ManualContentProvider::ClearAllEntries() {
++    std::scoped_lock lock{mutex};
+     entries.clear();
+     multi_version_entries.clear();
+ }
+@@ -1340,6 +1344,7 @@
+ }
+ 
+ VirtualFile ManualContentProvider::GetEntryRaw(u64 title_id, ContentRecordType type) const {
++    std::scoped_lock lock{mutex};
+     const auto iter =
+         std::find_if(entries.begin(), entries.end(), [title_id, type](const auto& entry) {
+             const auto content_type = std::get<1>(entry.first);
+@@ -1363,6 +1368,7 @@
+     std::optional<u64> title_id) const {
+     std::vector<ContentProviderEntry> out;
+ 
++    std::scoped_lock lock{mutex};
+     for (const auto& entry : entries) {
+         const auto [e_title_type, e_content_type, e_title_id] = entry.first;
+         if ((title_type == std::nullopt || e_title_type == *title_type) &&
+@@ -1380,6 +1386,7 @@
+ std::vector<ExternalUpdateEntry> ManualContentProvider::ListUpdateVersions(u64 title_id) const {
+     std::vector<ExternalUpdateEntry> out;
+ 
++    std::scoped_lock lock{mutex};
+     for (const auto& entry : multi_version_entries) {
+         if (entry.title_id == title_id) {
+             out.push_back(entry);
+@@ -1394,6 +1401,7 @@
+ }
+ 
+ VirtualFile ManualContentProvider::GetEntryForVersion(u64 title_id, ContentRecordType type, u32 version) const {
++    std::scoped_lock lock{mutex};
+     for (const auto& entry : multi_version_entries) {
+         if (entry.title_id == title_id && entry.version == version) {
+             if (auto const p = entry.files[size_t(type)])
+@@ -1404,20 +1412,32 @@
+ }
+ 
+ ExternalContentProvider::ExternalContentProvider(std::vector<VirtualDir> load_directories)
+-    : load_dirs(std::move(load_directories)) {
+-    ExternalContentProvider::Refresh();
++    : load_dirs(std::move(load_directories)) {}
++
++void ExternalContentProvider::EnsureScanned() const {
++    if (scanned.load(std::memory_order_acquire)) {
++        return;
++    }
++    std::scoped_lock lk{scan_mutex};
++    if (!scanned.load(std::memory_order_relaxed)) {
++        const_cast<ExternalContentProvider*>(this)->Refresh();
++    }
+ }
+ 
+ ExternalContentProvider::~ExternalContentProvider() = default;
+ 
+ void ExternalContentProvider::AddDirectory(VirtualDir directory) {
+     if (directory != nullptr) {
++        EnsureScanned();
++        std::scoped_lock lk{scan_mutex};
+         load_dirs.push_back(std::move(directory));
+         ScanDirectory(load_dirs.back());
+     }
+ }
+ 
+ void ExternalContentProvider::ClearDirectories() {
++    std::scoped_lock lk{scan_mutex};
++    scanned.store(true, std::memory_order_release);
+     load_dirs.clear();
+     entries.clear();
+     versions.clear();
+@@ -1433,6 +1453,8 @@
+             ScanDirectory(dir);
+         }
+     }
++    DuoExternalIndex::Index::Instance().Flush(); // Eden Duo
++    scanned.store(true, std::memory_order_release);
+ }
+ 
+ void ExternalContentProvider::ScanDirectory(const VirtualDir& dir) {
+@@ -1464,6 +1486,22 @@
+ }
+ 
+ void ExternalContentProvider::ProcessNSP(const VirtualFile& file) {
++    // Eden Duo: replay an unchanged container from the persistent index instead of decrypting
++    // and parsing it again (duo_external_content_index.h). Adds what
++    // AddExternalEntriesFromContainer adds.
++    const auto add = [this](const DuoExternalIndex::Record& record, const VirtualFile& entry_file) {
++        entries[{record.title_id, record.content_type, record.title_type}] = entry_file;
++        if (record.title_type == TitleType::Update) {
++            versions[record.title_id] = record.version;
++            UpsertExternalVersionEntry(multi_version_entries, record.title_id, record.version,
++                                       record.version_string, record.content_type, entry_file);
++        }
++    };
++    auto& index = DuoExternalIndex::Index::Instance();
++    if (index.Restore(file, add)) {
++        return;
++    }
++
+     const auto nsp = OpenContainerAsNsp(file, Loader::FileType::NSP);
+     if (!nsp) {
+         return;
+@@ -1476,7 +1514,16 @@
+     }
+ 
+     LOG_DEBUG(Service_FS, "Processing NSP file: {}", file->GetName());
+-    AddExternalEntriesFromContainer(nsp, entries, versions, multi_version_entries);
++    std::vector<DuoExternalIndex::Record> records;
++    ForEachContainerEntry(nsp, true, std::nullopt,
++                          [&](TitleType title_type, ContentRecordType content_type, u64 title_id,
++                              const VirtualFile& entry_file, u32 version,
++                              const std::string& version_string) {
++                              records.push_back({title_id, title_type, content_type, version,
++                                                 version_string, entry_file->GetName()});
++                              add(records.back(), entry_file);
++                          });
++    index.Store(file, std::move(records));
+ }
+ 
+ void ExternalContentProvider::ProcessXCI(const VirtualFile& file) {
+@@ -1489,10 +1536,12 @@
+ }
+ 
+ bool ExternalContentProvider::HasEntry(u64 title_id, ContentRecordType type) const {
++    EnsureScanned();
+     return GetEntryRaw(title_id, type) != nullptr;
+ }
+ 
+ std::optional<u32> ExternalContentProvider::GetEntryVersion(u64 title_id) const {
++    EnsureScanned();
+     const auto it = versions.find(title_id);
+     if (it != versions.end()) {
+         return it->second;
+@@ -1505,6 +1554,7 @@
+ }
+ 
+ VirtualFile ExternalContentProvider::GetEntryRaw(u64 title_id, ContentRecordType type) const {
++    EnsureScanned();
+     // Try to find in AOC (DLC) entries
+     {
+         const auto it = entries.find({title_id, type, TitleType::AOC});
+@@ -1536,6 +1586,7 @@
+ std::vector<ContentProviderEntry> ExternalContentProvider::ListEntriesFilter(
+     std::optional<TitleType> title_type, std::optional<ContentRecordType> record_type,
+     std::optional<u64> title_id) const {
++    EnsureScanned();
+     std::vector<ContentProviderEntry> out;
+ 
+     for (const auto& [key, file] : entries) {
+@@ -1554,6 +1605,7 @@
+ }
+ 
+ std::vector<ExternalUpdateEntry> ExternalContentProvider::ListUpdateVersions(u64 title_id) const {
++    EnsureScanned();
+     std::vector<ExternalUpdateEntry> out;
+ 
+     for (const auto& entry : multi_version_entries) {
+@@ -1570,6 +1622,7 @@
+ }
+ 
+ VirtualFile ExternalContentProvider::GetEntryForVersion(u64 title_id, ContentRecordType type, u32 version) const {
++    EnsureScanned();
+     for (const auto& entry : multi_version_entries)
+         if (entry.title_id == title_id && entry.version == version)
+             if (auto const p = entry.files[size_t(type)])

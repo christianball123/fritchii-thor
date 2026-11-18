@@ -1,0 +1,10 @@
+--- /tmp/src/eden-base/CMakeLists.txt	2026-11-18 19:50:09.393973089 +0000
++++ /tmp/src/eden-duo/CMakeLists.txt	2026-11-18 19:35:15.948650840 +0000
+@@ -86,6 +86,7 @@
+ set(YUZU_QT_MIRROR "" CACHE STRING "What mirror to use for downloading the bundled Qt libraries")
+ cmake_dependent_option(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" "${MSVC}" "ENABLE_QT" OFF)
+ 
++option(EDEN_DSMOD_BUILD_DEV_TOOLS "Build the DSMod RE/heap-analysis developer toolkit" ON)
+ option(ENABLE_DEBUG_TOOLS "Enable debugging tools (maxwell disassembler, SPIRV translator, etc)" OFF)
+ option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
+ 

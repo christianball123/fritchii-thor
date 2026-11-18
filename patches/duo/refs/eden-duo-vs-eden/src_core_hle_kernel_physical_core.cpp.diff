@@ -1,0 +1,25 @@
+--- /tmp/src/eden-base/src/core/hle/kernel/physical_core.cpp	2026-11-18 19:50:26.013971226 +0000
++++ /tmp/src/eden-duo/src/core/hle/kernel/physical_core.cpp	2026-11-18 19:38:06.983848302 +0000
+@@ -7,6 +7,7 @@
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "core/core.h"
++#include "core/mods/mod_runtime.h"
+ #include "core/debugger/debugger.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_thread.h"
+@@ -131,6 +132,14 @@
+                 // state.
+                 interface->GetContext(thread->GetContext());
+             }
++            // DSMod: a mod-owned breakpoint is not a debugger event -- it redirects this
++            // thread into a guest call and resumes, so give the runtime first refusal.
++            if (breakpoint) {
++                if (auto* mods = system.ModRuntime();
++                    mods != nullptr && mods->OnGuestBreakpoint(*thread, *interface)) {
++                    continue;
++                }
++            }
+             if (system.DebuggerEnabled()) {
+                 system.GetDebugger().NotifyThreadStopped(thread);
+             } else {

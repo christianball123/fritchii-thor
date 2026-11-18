@@ -1,0 +1,221 @@
+diff --git a/src/video_core/framebuffer_config.h b/src/video_core/framebuffer_config.h
+index 83953e2..41ba963 100644
+--- a/src/video_core/framebuffer_config.h
++++ b/src/video_core/framebuffer_config.h
+@@ -38,6 +38,7 @@ struct FramebufferConfig {
+     BlendMode blending{};
+     bool native_tiling{};
+     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
++    u64 layer_id{}; // VI layer id (DSMod aux routing)
+ };
+ 
+ Common::Rectangle<f32> NormalizeCrop(const FramebufferConfig& framebuffer, u32 texture_width,
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index ad2602f..adc83b1 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -35,6 +35,7 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_dma.h"
+ #include "video_core/gpu.h"
++#include "video_core/dsmod/texture_readback.h"
+ #include "video_core/pending_maps.h"
+ #include "video_core/gpu_thread.h"
+ #include "video_core/gpu_timestamp.h"
+@@ -112,6 +113,26 @@ struct GPU::Impl {
+         system.Host1x().gmmu_manager.BindRasterizer(renderer->ReadRasterizer());
+     }
+ 
++    bool DSModTextureReadbackAvailable() const {
++        return renderer && renderer->ReadRasterizer() &&
++               renderer->ReadRasterizer()->DSModSupportsTextureReadback();
++    }
++
++    bool DSModRequestTextureReadback(const VideoCore::DSMod::ReadbackRequest& request,
++                                     VideoCore::DSMod::ReadbackCallback&& callback) {
++        if (!DSModTextureReadbackAvailable()) {
++            return false;
++        }
++        // Schedule on GPU thread when Fritchii exposes RequestSyncOperation.
++        if (!renderer->ReadRasterizer()->DSModReadbackTexture(request, callback)) {
++            VideoCore::DSMod::ReadbackResult result;
++            result.status = VideoCore::DSMod::ReadbackStatus::Unsupported;
++            callback(std::move(result));
++        }
++        return true;
++    }
++
++
+     /// Flush all current written commands into the host GPU for execution.
+     void FlushCommands() {
+         renderer->ReadRasterizer()->FlushCommands();
+@@ -648,6 +669,7 @@ struct GPU::Impl {
+     VideoCommon::GPUThread::ThreadManager gpu_thread;
+ 
+     std::unique_ptr<VideoCore::RendererBase> renderer;
++    VideoCore::DSMod::AuxRouting dsmod_aux;
+     const bool use_nvdec;
+ 
+     s32 new_channel_id{1};
+@@ -823,6 +845,21 @@ const Tegra::DmaPusher& GPU::DmaPusher() const {
+     return impl->current_channel->payload->dma_pusher;
+ }
+ 
++
++VideoCore::DSMod::AuxRouting& GPU::DSModAux() {
++    return impl->dsmod_aux;
++}
++
++bool GPU::DSModTextureReadbackAvailable() const {
++    return impl->DSModTextureReadbackAvailable();
++}
++
++bool GPU::DSModRequestTextureReadback(
++    const VideoCore::DSMod::ReadbackRequest& request,
++    std::function<void(VideoCore::DSMod::ReadbackResult&&)> callback) {
++    return impl->DSModRequestTextureReadback(request, std::move(callback));
++}
++
+ VideoCore::RendererBase& GPU::Renderer() {
+     return *impl->renderer;
+ }
+diff --git a/src/video_core/gpu.h b/src/video_core/gpu.h
+index 4bfadea..2480d83 100644
+--- a/src/video_core/gpu.h
++++ b/src/video_core/gpu.h
+@@ -14,6 +14,7 @@
+ #include "common/common_types.h"
+ #include "core/hle/service/nvdrv/nvdata.h"
+ #include "video_core/cdma_pusher.h"
++#include "video_core/dsmod/aux_routing.h"
+ #include "video_core/framebuffer_config.h"
+ #include "video_core/rasterizer_download_area.h"
+ 
+@@ -26,6 +27,11 @@ class RendererBase;
+ class ShaderNotify;
+ } // namespace VideoCore
+ 
++namespace VideoCore::DSMod {
++struct ReadbackRequest;
++struct ReadbackResult;
++} // namespace VideoCore::DSMod
++
+ namespace Tegra {
+ class DmaPusher;
+ struct CommandList;
+@@ -216,6 +222,15 @@ public:
+     [[nodiscard]] const Tegra::DmaPusher& DmaPusher() const;
+ 
+     /// Returns a reference to the underlying renderer.
++    
++    /// DSMod second-screen routing state shared by the renderer, dsm:u and the frontend
++    [[nodiscard]] VideoCore::DSMod::AuxRouting& DSModAux();
++
++    [[nodiscard]] bool DSModTextureReadbackAvailable() const;
++    bool DSModRequestTextureReadback(
++        const VideoCore::DSMod::ReadbackRequest& request,
++        std::function<void(VideoCore::DSMod::ReadbackResult&&)> callback);
++
+     [[nodiscard]] VideoCore::RendererBase& Renderer();
+ 
+     /// Returns a const reference to the underlying renderer.
+diff --git a/src/video_core/rasterizer_interface.h b/src/video_core/rasterizer_interface.h
+index fbbe325..0c458ef 100644
+--- a/src/video_core/rasterizer_interface.h
++++ b/src/video_core/rasterizer_interface.h
+@@ -20,6 +20,7 @@
+ #include "video_core/gpu.h"
+ #include "video_core/query_cache/types.h"
+ #include "video_core/rasterizer_download_area.h"
++#include "video_core/dsmod/texture_readback.h"
+ 
+ namespace Tegra {
+ class MemoryManager;
+@@ -307,6 +308,16 @@ public:
+         DAddr addr, u64 size, VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
+ 
+     /// Notify the host renderer to wait for previous primitive and compute operations.
++
++    /// Eden Duo (runtime 24): whether DSModReadbackTexture can read guest textures back.
++    [[nodiscard]] virtual bool DSModSupportsTextureReadback() const {
++        return false;
++    }
++    virtual bool DSModReadbackTexture(const DSMod::ReadbackRequest& request,
++                                      DSMod::ReadbackCallback& callback) {
++        return false;
++    }
++
+     virtual void WaitForIdle() = 0;
+ 
+     /// Notify the host renderer to wait for reads and writes to render targets and flush caches.
+diff --git a/src/video_core/renderer_base.h b/src/video_core/renderer_base.h
+index 175c2f9..f592421 100644
+--- a/src/video_core/renderer_base.h
++++ b/src/video_core/renderer_base.h
+@@ -63,6 +63,9 @@ public:
+ 
+     [[nodiscard]] virtual std::string GetDeviceVendor() const = 0;
+ 
++    /// DSMod: attach (or detach with nullptr) a second output window.
++    virtual void SetAuxWindow(Core::Frontend::EmuWindow* aux_window) {}
++
+     /// How many NVIDIA DLSS evaluations ran so far and the mode of the last one
+     [[nodiscard]] virtual DlssStatus GetDlssStatus() const {
+         return {};
+@@ -115,6 +118,10 @@ public:
+                            Service::Nvnflinger::LayerStackId layer_stack =
+                                Service::Nvnflinger::LayerStackId::Default);
+ 
++    [[nodiscard]] bool TakePendingScreenshot(void*& data, std::function<void(bool)>& callback,
++                                             Layout::FramebufferLayout& layout,
++                                             Service::Nvnflinger::LayerStackId& layer_stack);
++
+ protected:
+     Core::Frontend::EmuWindow& render_window; ///< Reference to the render window handle.
+     std::unique_ptr<Core::Frontend::GraphicsContext> context;
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index a627f43..821b07d 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -28,6 +28,7 @@
+ #include "video_core/post_processing/fx_chain.h"
+ #endif
+ #include "video_core/renderer_vulkan/renderer_vulkan.h"
++#include "video_core/renderer_vulkan/vk_dsmod_aux.h"
+ #include "video_core/renderer_vulkan/vk_blit_screen.h"
+ #include "video_core/renderer_vulkan/vk_rasterizer.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+@@ -453,4 +454,11 @@ VideoCore::DlssStatus RendererVulkan::GetDlssStatus() const {
+ }
+ #endif
+ 
++
++void RendererVulkan::SetAuxWindow(Core::Frontend::EmuWindow* aux_window_) {
++    if (dsmod_aux) {
++        dsmod_aux->SetAuxWindow(aux_window_);
++    }
++}
++
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.h b/src/video_core/renderer_vulkan/renderer_vulkan.h
+index 15a8f87..081cc3b 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.h
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.h
+@@ -33,6 +33,8 @@ class GPU;
+ 
+ namespace Vulkan {
+ 
++class DSModAuxPresenter;
++
+ Device CreateDevice(const vk::Instance& instance, const vk::InstanceDispatch& dld,
+                     VkSurfaceKHR surface);
+ 
+@@ -109,6 +111,8 @@ private:
+     std::optional<TurboMode> turbo_mode;
+ 
+     Frame applet_frame;
++    std::unique_ptr<DSModAuxPresenter> dsmod_aux; ///< Eden Duo second screen
++
+ };
+ 
+ } // namespace Vulkan

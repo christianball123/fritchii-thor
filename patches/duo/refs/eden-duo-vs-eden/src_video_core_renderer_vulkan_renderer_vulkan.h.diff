@@ -1,0 +1,39 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/renderer_vulkan.h	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/renderer_vulkan.h	2026-11-18 19:46:44.634057761 +0000
+@@ -37,6 +37,8 @@
+ 
+ namespace Vulkan {
+ 
++class DSModAuxPresenter;
++
+ Device CreateDevice(const vk::Instance& instance, const vk::InstanceDispatch& dld,
+                     VkSurfaceKHR surface);
+ 
+@@ -62,6 +64,8 @@
+     // Enhanced platform-specific initialization
+     void InitializePlatformSpecific();
+ 
++    void SetAuxWindow(Core::Frontend::EmuWindow* aux_window_) override;
++
+ private:
+     void InterpolateFrames(Frame* prev_frame, Frame* curr_frame);
+     Frame* previous_frame = nullptr;  // Store the previous frame for interpolation
+@@ -72,7 +76,8 @@
+     vk::Buffer RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
+                               const Layout::FramebufferLayout& layout, VkFormat format,
+                               VkDeviceSize buffer_size);
+-    void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers);
++    void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers,
++                          std::span<const Tegra::FramebufferConfig> primary);
+     void RenderAppletCaptureLayer(std::span<const Tegra::FramebufferConfig> framebuffers);
+ 
+     std::vector<Tegra::FramebufferConfig> applet_capture_layers;
+@@ -107,6 +112,8 @@
+     std::optional<TurboMode> turbo_mode;
+ 
+     Frame applet_frame;
++
++    std::unique_ptr<DSModAuxPresenter> dsmod_aux; ///< Eden Duo second screen (vk_dsmod_aux.cpp)
+ };
+ 
+ } // namespace Vulkan

@@ -1,0 +1,9 @@
+--- /tmp/src/eden-base/src/video_core/CMakeLists.txt	2026-11-18 19:50:26.085971219 +0000
++++ /tmp/src/eden-duo/src/video_core/CMakeLists.txt	2026-11-18 19:46:44.622057771 +0000
+@@ -482,4 +482,6 @@
+     target_link_libraries(video_core PRIVATE adrenotools)
+ endif()
+ 
++include(dsmod/duo_video_core.cmake) # Eden Duo: second-screen presenter sources
++
+ create_target_directory_groups(video_core)

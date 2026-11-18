@@ -1,0 +1,26 @@
+--- /tmp/src/eden-base/src/video_core/renderer_base.h	2026-11-18 19:50:26.097971219 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_base.h	2026-11-18 19:46:44.630057764 +0000
+@@ -48,6 +48,9 @@
+ 
+     [[nodiscard]] virtual std::string GetDeviceVendor() const = 0;
+ 
++    /// DSMod: attach (or detach with nullptr) a second output window. Applied on the GPU thread.
++    virtual void SetAuxWindow(Core::Frontend::EmuWindow* aux_window) {}
++
+     // Getter/setter functions:
+     // ------------------------
+ 
+@@ -95,6 +98,13 @@
+                            Service::Nvnflinger::LayerStackId layer_stack =
+                                Service::Nvnflinger::LayerStackId::Default);
+ 
++    /// Take ownership of a pending screenshot request (data, callback, layout, layer stack) and
++    /// clear the pending flag, so the render thread can service it without racing new requests.
++    /// Returns false if no request is pending.
++    [[nodiscard]] bool TakePendingScreenshot(void*& data, std::function<void(bool)>& callback,
++                                             Layout::FramebufferLayout& layout,
++                                             Service::Nvnflinger::LayerStackId& layer_stack);
++
+ protected:
+     Core::Frontend::EmuWindow& render_window; ///< Reference to the render window handle.
+     std::unique_ptr<Core::Frontend::GraphicsContext> context;

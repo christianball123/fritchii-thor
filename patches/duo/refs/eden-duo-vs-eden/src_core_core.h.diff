@@ -1,0 +1,67 @@
+--- /tmp/src/eden-base/src/core/core.h	2026-11-18 19:50:25.977971230 +0000
++++ /tmp/src/eden-duo/src/core/core.h	2026-11-18 19:38:06.951848578 +0000
+@@ -5,12 +5,14 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #pragma once
++#include <utility>
+ 
+ #include <cstddef>
+ #include <deque>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <span>
+ #include <string>
+ #include <vector>
+@@ -102,6 +104,14 @@
+ class AudioCore;
+ } // namespace AudioCore
+ 
++namespace InputCommon {
++class InputSubsystem;
++}
++
++namespace Core::Mods {
++class ModRuntime;
++}
++
+ namespace Core::Timing {
+ class CoreTiming;
+ }
+@@ -192,6 +202,12 @@
+     std::unique_lock<std::mutex> StallApplication();
+     void UnstallApplication();
+ 
++    /// Runs `fn` with the application's guest threads suspended, without pausing core timing, so
++    /// it may be called from a CoreTiming callback (multi-core: the timing thread). Never blocks
++    /// on a concurrent pause/resume: returns false without running `fn` when the suspend guard is
++    /// busy or emulation is paused. Guest threads are resumed afterwards unless the user paused.
++    bool RunWithGuestThreadsSuspended(const std::function<void()>& fn);
++
+     void SetNVDECActive(bool is_nvdec_active);
+     [[nodiscard]] bool GetNVDECActive();
+ 
+@@ -383,6 +399,21 @@
+     [[nodiscard]] Service::Account::ProfileManager& GetProfileManager();
+     [[nodiscard]] const Service::Account::ProfileManager& GetProfileManager() const;
+ 
++    /// DSMod: frontend-owned input subsystem, used for synthetic button presses.
++    void SetInputSubsystem(InputCommon::InputSubsystem* input_subsystem);
++    [[nodiscard]] InputCommon::InputSubsystem* GetInputSubsystem() const;
++
++    /// DSMod: dual-screen mod runtime for the running title (nullptr when the title has no package)
++    [[nodiscard]] Core::Mods::ModRuntime* ModRuntime();
++    void RegisterDualScreenMod(const std::array<u8, 0x20>& build_id, VAddr main_region_begin,
++                               u64 main_region_size);
++    void SetDualScreenGuestMailbox(u64 address, u64 size,
++                                   std::optional<u32> epoch_offset = std::nullopt);
++    /// Invalidates queued guest mailbox work before resuming threads. Opt-in load plans only.
++    void InvalidateDualScreenGuestMailbox();
++    [[nodiscard]] u32 GetDualScreenGuestMailboxEpoch() const;
++    [[nodiscard]] std::pair<u64, u64> GetDualScreenGuestMailbox() const;
++
+     [[nodiscard]] Core::Debugger& GetDebugger();
+     [[nodiscard]] const Core::Debugger& GetDebugger() const;
+ 

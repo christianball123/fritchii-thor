@@ -1,0 +1,10 @@
+--- /tmp/src/eden-base/src/hid_core/CMakeLists.txt	2026-11-18 19:50:26.065971222 +0000
++++ /tmp/src/eden-duo/src/hid_core/CMakeLists.txt	2026-11-18 19:46:44.614057777 +0000
+@@ -78,6 +78,7 @@
+     resources/mouse/mouse_types.h
+     resources/npad/npad.cpp
+     resources/npad/npad.h
++    resources/npad/dsmod_pad_gate.h
+     resources/npad/npad_data.cpp
+     resources/npad/npad_data.h
+     resources/npad/npad_resource.cpp

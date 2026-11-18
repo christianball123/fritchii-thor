@@ -1,0 +1,10 @@
+--- /tmp/src/eden-base/src/video_core/framebuffer_config.h	2026-11-18 19:50:26.089971218 +0000
++++ /tmp/src/eden-duo/src/video_core/framebuffer_config.h	2026-11-18 19:46:44.626057767 +0000
+@@ -37,6 +37,7 @@
+     Service::android::BufferTransformFlags transform_flags{};
+     Common::Rectangle<int> crop_rect{};
+     BlendMode blending{};
++    u64 layer_id{}; // VI layer id (DSMod aux routing)
+     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
+ };
+ 

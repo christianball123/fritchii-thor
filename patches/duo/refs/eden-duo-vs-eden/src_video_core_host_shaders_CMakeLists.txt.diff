@@ -1,0 +1,11 @@
+--- /tmp/src/eden-base/src/video_core/host_shaders/CMakeLists.txt	2026-11-18 19:50:26.093971218 +0000
++++ /tmp/src/eden-duo/src/video_core/host_shaders/CMakeLists.txt	2026-11-18 19:46:44.626057767 +0000
+@@ -94,6 +94,8 @@
+     ${CMAKE_CURRENT_SOURCE_DIR}/sgsr1_shader_mobile_edge_direction.frag
+ )
+ 
++include(duo_shaders.cmake) # Eden Duo: second-screen compositor shaders
++
+ if (HAIKUOS)
+     # glslangValidator WILL crash, glslang will not
+     set(GLSLANGVALIDATOR "glslang")

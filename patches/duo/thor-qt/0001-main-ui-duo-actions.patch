@@ -1,0 +1,28 @@
+diff --git a/src/yuzu/main.ui b/src/yuzu/main.ui
+index eb075bc..7157534 100644
+--- a/src/yuzu/main.ui
++++ b/src/yuzu/main.ui
+@@ -68,6 +68,8 @@
+      <addaction name="action_Log_Folder"/>
+     </widget>
+     <addaction name="action_Install_File_NAND"/>
++    <addaction name="action_Install_Duo_Companion"/>
++    <addaction name="action_Remove_Duo_Companion"/>
+     <addaction name="separator"/>
+     <addaction name="action_Load_File"/>
+     <addaction name="action_Load_Folder"/>
+@@ -632,4 +634,14 @@
+   <include location="yuzu.qrc"/>
+  </resources>
+  <connections/>
++  <action name="action_Install_Duo_Companion">
++   <property name="text">
++    <string>Install Duo Companion...</string>
++   </property>
++  </action>
++  <action name="action_Remove_Duo_Companion">
++   <property name="text">
++    <string>Remove Duo Companion...</string>
++   </property>
++  </action>
+ </ui>

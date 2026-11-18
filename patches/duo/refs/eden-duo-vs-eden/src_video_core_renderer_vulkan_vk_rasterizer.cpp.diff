@@ -1,0 +1,20 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/vk_rasterizer.cpp	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/vk_rasterizer.cpp	2026-11-18 19:46:44.638057759 +0000
+@@ -267,6 +267,9 @@
+ 
+     UpdateDynamicStates();
+ 
++    static DSModProbeState* dsmod_probe{}; // Eden Duo developer probes (vk_dsmod_rt_probe.cpp)
++    DSModProbeRenderTargets(dsmod_probe);
++
+     query_cache.NotifySegment(true);
+     HandleTransformFeedback();
+     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+@@ -1029,6 +1032,7 @@
+ 
+ void RasterizerVulkan::TickFrame() {
+     draw_counter = 0;
++    DSModCompleteTextureReadbacks(); // Eden Duo (vk_dsmod_texture_readback.cpp)
+     guest_descriptor_queue.TickFrame();
+     compute_pass_descriptor_queue.TickFrame();
+     descriptor_buffer_ring.TickFrame();

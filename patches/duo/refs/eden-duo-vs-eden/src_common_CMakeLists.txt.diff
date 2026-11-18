@@ -1,0 +1,9 @@
+--- /tmp/src/eden-base/src/common/CMakeLists.txt	2026-11-18 19:50:25.969971230 +0000
++++ /tmp/src/eden-duo/src/common/CMakeLists.txt	2026-11-18 19:35:16.740652437 +0000
+@@ -259,3 +259,6 @@
+ endif()
+ 
+ create_target_directory_groups(common)
++
++# Keep header-only runtime/renderer development gates consistent in every consumer.
++target_compile_definitions(common PUBLIC EDEN_DSMOD_BUILD_DEV_TOOLS=$<BOOL:${EDEN_DSMOD_BUILD_DEV_TOOLS}>)

@@ -15,6 +15,7 @@ Christian’s agent memory plus the **Fritchii Thor** AppImage packaging kit for
 - Turnip / Game Mode tweaks
 
 See `packaging/thor/BUILD.md` for rebuild steps onto Fritchii **v6.1**.
+Duo source patches live in `patches/duo/` (`README.md`, `scripts/apply.sh`).
 
 ### Origin clone
 

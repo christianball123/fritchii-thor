@@ -1,0 +1,36 @@
+--- /tmp/src/eden-base/src/core/file_sys/registered_cache.h	2026-11-18 19:50:25.981971230 +0000
++++ /tmp/src/eden-duo/src/core/file_sys/registered_cache.h	2026-11-18 19:38:06.959848509 +0000
+@@ -7,8 +7,10 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <functional>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ #include <string>
+ #include <vector>
+@@ -284,6 +286,9 @@
+     VirtualFile GetEntryForVersion(u64 title_id, ContentRecordType type, u32 version) const;
+ 
+ private:
++    // The Android frontend fills this from its game-list scan (coroutine thread) while a game
++    // launch reads and adds entries (UI and emulation threads), so every access takes the lock.
++    mutable std::mutex mutex;
+     std::map<std::tuple<TitleType, ContentRecordType, u64>, VirtualFile> entries;
+     std::vector<ExternalUpdateEntry> multi_version_entries;
+ };
+@@ -313,7 +318,12 @@
+     void ScanDirectory(const VirtualDir& dir);
+     void ProcessNSP(const VirtualFile& file);
+     void ProcessXCI(const VirtualFile& file);
++    // Eden Duo: scan on first lookup instead of in the constructor, which runs on the Android UI
++    // thread at startup (hundreds of linked update/DLC containers took seconds).
++    void EnsureScanned() const;
+ 
++    mutable std::mutex scan_mutex;
++    mutable std::atomic_bool scanned{false};
+     std::vector<VirtualDir> load_dirs;
+     ::Common::unordered_map<std::tuple<u64, ContentRecordType, TitleType>, VirtualFile> entries;
+     ::Common::unordered_map<u64, u32> versions;

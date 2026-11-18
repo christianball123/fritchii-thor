@@ -1,0 +1,14 @@
+--- /tmp/src/eden-base/src/core/loader/nro.cpp	2026-11-18 19:50:26.041971224 +0000
++++ /tmp/src/eden-duo/src/core/loader/nro.cpp	2026-11-18 19:38:07.015848026 +0000
+@@ -297,6 +297,11 @@
+     // Load codeset for current process
+     codeset.memory = std::move(program_image);
+     process.LoadModule(system.Kernel(), std::move(codeset), process.GetEntryPoint());
++
++    // DSMod: homebrew can carry a dual-screen package too; "main+..." is relative to the NRO base.
++    // NROs have no build id, so such a package uses the generic "data.json" data file.
++    system.RegisterDualScreenMod(std::array<u8, 0x20>{},
++                                 GetInteger(process.GetEntryPoint()), image_size);
+     if (!argv_string.empty()) {
+         constexpr u32 kEntryEndOfList = 0;
+         constexpr u32 kEntryMainThreadHandle = 1;

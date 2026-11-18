@@ -1,0 +1,23 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/vk_present_manager.h	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/vk_present_manager.h	2026-11-18 19:46:44.638057759 +0000
+@@ -48,12 +48,19 @@
+                    MemoryAllocator& memory_allocator,
+                    Scheduler& scheduler,
+                    Swapchain& swapchain,
+-                   vk::SurfaceKHR& surface);
++                   vk::SurfaceKHR& surface,
++                   bool allow_present_thread = true,
++                   bool force_present_thread = false);
+     ~PresentManager();
+ 
+     /// Returns the last used presentation frame
+     Frame* GetRenderFrame();
+ 
++    /// Returns a ready presentation frame without waiting, or nullptr when every frame is still
++    /// queued/in flight. Auxiliary outputs use this so a stalled secondary surface cannot apply
++    /// backpressure to the primary renderer.
++    Frame* TryGetRenderFrame();
++
+     /// Pushes a frame for presentation
+     void Present(Frame* frame);
+ 

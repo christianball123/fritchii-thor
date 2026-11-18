@@ -1,0 +1,11 @@
+--- /tmp/src/eden-base/src/common/stb.h	2026-11-18 19:50:25.973971230 +0000
++++ /tmp/src/eden-duo/src/common/stb.h	2026-11-18 19:35:16.744652445 +0000
+@@ -7,7 +7,7 @@
+ #pragma once
+ 
+ #define STBI_ONLY_JPEG 1
+-#define STBI_WRITE_NO_STDIO 1
++#define STBI_ONLY_PNG 1
+ #include <stb_image.h>
+ #include <stb_image_resize.h>
+ #include <stb_image_write.h>

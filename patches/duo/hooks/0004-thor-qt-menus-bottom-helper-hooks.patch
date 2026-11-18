@@ -1,0 +1,110 @@
+diff --git a/src/yuzu/CMakeLists.txt b/src/yuzu/CMakeLists.txt
+index 50b4e7a..1150c7f 100644
+--- a/src/yuzu/CMakeLists.txt
++++ b/src/yuzu/CMakeLists.txt
+@@ -456,4 +456,6 @@ if (TARGET nxformat::static_nozstd)
+     target_link_libraries(yuzu PRIVATE nxformat::static_nozstd)
+     target_compile_definitions(yuzu PRIVATE LICHII_NX_TOOLS)
+ endif()
++include(duo/duo_qt.cmake) # Thor: Duo companion menus + bottom helper
++
+ create_target_directory_groups(yuzu)
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 9b496ae..c74a13f 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -427,6 +427,9 @@ static void LoadNx2Switches(const char* argv0) {
+ }
+ 
+ int main(int argc, char* argv[]) {
++    if (const auto helper_rc = DuoQt::MaybeRunBottomHelper(argc, argv)) {
++        return *helper_rc;
++    }
+ #ifdef ENABLE_UPDATE_CHECKER
+     // Before the switches are added to the environment, which a restart must not inherit.
+     Updater::PrepareLaunch();
+diff --git a/src/yuzu/main.ui b/src/yuzu/main.ui
+index eb075bc..7157534 100644
+--- a/src/yuzu/main.ui
++++ b/src/yuzu/main.ui
+@@ -68,6 +68,8 @@
+      <addaction name="action_Log_Folder"/>
+     </widget>
+     <addaction name="action_Install_File_NAND"/>
++    <addaction name="action_Install_Duo_Companion"/>
++    <addaction name="action_Remove_Duo_Companion"/>
+     <addaction name="separator"/>
+     <addaction name="action_Load_File"/>
+     <addaction name="action_Load_Folder"/>
+@@ -632,4 +634,14 @@
+   <include location="yuzu.qrc"/>
+  </resources>
+  <connections/>
++  <action name="action_Install_Duo_Companion">
++   <property name="text">
++    <string>Install Duo Companion...</string>
++   </property>
++  </action>
++  <action name="action_Remove_Duo_Companion">
++   <property name="text">
++    <string>Remove Duo Companion...</string>
++   </property>
++  </action>
+ </ui>
+diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
+index 6b228b5..3c7d528 100644
+--- a/src/yuzu/main_window.cpp
++++ b/src/yuzu/main_window.cpp
+@@ -1911,6 +1911,8 @@ void MainWindow::ConnectMenuEvents() {
+     connect_menu(ui->action_Load_File, &MainWindow::OnMenuLoadFile);
+     connect_menu(ui->action_Load_Folder, &MainWindow::OnMenuLoadFolder);
+     connect_menu(ui->action_Install_File_NAND, &MainWindow::OnMenuInstallToNAND);
++    connect_menu(ui->action_Install_Duo_Companion, &MainWindow::OnMenuInstallDuoCompanion);
++    connect_menu(ui->action_Remove_Duo_Companion, &MainWindow::OnMenuRemoveDuoCompanion);
+     connect_menu(ui->action_Exit, &QMainWindow::close);
+     connect_menu(ui->action_Load_Amiibo, &MainWindow::OnLoadAmiibo);
+ 
+@@ -3630,6 +3632,29 @@ ContentManager::InstallResult MainWindow::InstallNCA(const QString& filename) {
+                                       static_cast<FileSys::TitleType>(index), progress_callback);
+ }
+ 
++
++void MainWindow::OnMenuInstallDuoCompanion() {
++    const QStringList paths = QFileDialog::getOpenFileNames(
++        this, tr("Install Duo Companion"),
++        QString::fromStdString(UISettings::values.roms_path),
++        tr("Duo Companion (*.dsmod.zip *.zip)"));
++    if (paths.isEmpty()) {
++        return;
++    }
++    DuoQt::InstallCompanions(this, paths);
++}
++
++void MainWindow::OnMenuRemoveDuoCompanion() {
++    DuoQt::RemoveCompanionInteractive(this);
++}
++
++void MainWindow::OnGameListDumpDuoFiles() {
++    // Wired from the game-list context menu when a title is selected.
++    // title id / name come from the current game-list selection in Claude's build;
++    // here we fall back to asking for a title id if none is selected.
++    DuoQt::DumpCompanionFiles(this, 0, {});
++}
++
+ void MainWindow::OnMenuRecentFile() {
+     QAction* action = qobject_cast<QAction*>(sender());
+     assert(action);
+diff --git a/src/yuzu/main_window.h b/src/yuzu/main_window.h
+index b74a9c4..ccc0dea 100644
+--- a/src/yuzu/main_window.h
++++ b/src/yuzu/main_window.h
+@@ -386,6 +386,9 @@ private slots:
+     void OnMenuLoadFolder();
+     void IncrementInstallProgress();
+     void OnMenuInstallToNAND();
++    void OnMenuInstallDuoCompanion();
++    void OnMenuRemoveDuoCompanion();
++    void OnGameListDumpDuoFiles();
+     void OnMenuRecentFile();
+     void OnConfigure();
+     /// Asks whether Ocarina of Time runs at 60 or 30 FPS (Settings::values.oot_30fps).

@@ -1,0 +1,35 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/present/window_adapt_pass.h	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/present/window_adapt_pass.h	2026-11-18 19:46:44.634057761 +0000
+@@ -12,6 +12,7 @@
+ 
+ #include "common/math_util.h"
+ #include "common/overlay_panels.h"
++#include "video_core/renderer_vulkan/present/dsmod_companion_quad.h" // Eden Duo Stage 1
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
+ namespace Layout {
+@@ -39,9 +40,12 @@
+     ~WindowAdaptPass();
+ 
+     /// (With the overlay panels on top only where asked: the screen's, not a capture)
++    /// `companion`: Eden Duo Stage 1, see CompanionQuad above. Null (the default) or an empty
++    /// (zero-extent `pane`) quad draws nothing extra -- zero cost when inline dual screen is off.
+     void Draw(const Device& device, RasterizerVulkan& rasterizer, Scheduler& scheduler, size_t image_index,
+               std::list<Layer>& layers, std::span<const Tegra::FramebufferConfig> configs,
+-              const Layout::FramebufferLayout& layout, Frame* dst, bool overlay_panels = false);
++              const Layout::FramebufferLayout& layout, Frame* dst, bool overlay_panels = false,
++              const CompanionQuad* companion = nullptr);
+ 
+     VkDescriptorSetLayout GetDescriptorSetLayout();
+     VkRenderPass GetRenderPass();
+@@ -91,6 +95,10 @@
+         std::uint64_t used_tick = 0;
+     };
+     std::array<OverlayQuad, Common::OverlayPanelCount> overlays;
++
++    // Eden Duo Stage 1: the companion quad's own descriptor/sampler and draw steps (see
++    // dsmod_companion_quad.h).
++    CompanionQuadRenderer companion_renderer;
+ };
+ 
+ } // namespace Vulkan

@@ -1,0 +1,359 @@
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index dfc89d5..f3e65d2 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -75,6 +75,10 @@
+ #include "core/loader/nx.h"
+ #include "core/memory.h"
+ #include "core/memory/cheat_engine.h"
++#include "common/atomic_ops.h"
++#include "core/mods/mod_runtime.h"
++#include "core/mods/mod_launch_gate.h"
++#include "common/scope_exit.h"
+ #include "core/perf_stats.h"
+ #include "core/reporter.h"
+ #include "core/tools/freezer.h"
+@@ -313,6 +317,8 @@ struct System::Impl {
+     void Run() {
+         std::unique_lock<std::mutex> lk(suspend_guard);
+ 
++        InvalidateDualScreenGuestMailbox();
++
+         kernel.SuspendEmulation(false);
+         core_timing.SyncPause(false);
+         // A pause shows in the log with its length: a long one looks exactly like a freeze to
+@@ -331,6 +337,7 @@ struct System::Impl {
+ 
+         core_timing.SyncPause(true);
+         kernel.SuspendEmulation(true);
++        InvalidateDualScreenGuestMailbox();
+         if (!is_paused.exchange(true, std::memory_order_relaxed) && is_powered_on) {
+             pause_begin = std::chrono::steady_clock::now();
+             LOG_INFO(Core, "Emulation paused");
+@@ -349,6 +356,22 @@ struct System::Impl {
+         return lk;
+     }
+ 
++    bool RunWithGuestThreadsSuspended(const std::function<void()>& fn) {
++        std::unique_lock<std::mutex> lk(suspend_guard, std::try_to_lock);
++        if (!lk.owns_lock()) {
++            return false;
++        }
++        if (IsPaused()) {
++            fn();
++            return true;
++        }
++        kernel.SuspendEmulation(true);
++        SCOPE_EXIT { kernel.SuspendEmulation(false); };
++        fn();
++        return true;
++    }
++
++
+     void UnstallApplication() {
+         is_stalled.store(false, std::memory_order_relaxed);
+         if (!IsPaused()) {
+@@ -445,6 +468,12 @@ struct System::Impl {
+     }
+ 
+     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window, const std::string& filepath, Service::AM::FrontendAppletParameters& params) {
++        dsmod_mailbox_address = dsmod_mailbox_size = 0;
++        dsmod_mailbox_epoch_offset.reset();
++        dsmod_mailbox_epoch.store(0, std::memory_order_release);
++        // DSMod: clear leftover registration from a previous load/title.
++        ResetPendingDualScreenMod();
++
+         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
+             fs_controller.InitTempStorage();
+         }
+@@ -515,6 +544,7 @@ struct System::Impl {
+ 
+         // Expose program id to dump sites and other global readers.
+         Settings::SetCurrentProgramID(params.program_id);
++        pending_mod_title_id = params.program_id;
+ 
+         // Track launch time for frontend launches
+         LaunchTimestampCache::SaveLaunchTimestamp(params.program_id);
+@@ -544,6 +574,27 @@ struct System::Impl {
+         }
+         // Waiting for GPU before initializing CPU
+         cpu_manager.Initialize();
++        // DSMod: discover companion package now that the application process exists.
++        if (pending_mod_base != 0 && !Mods::CompanionsDisabledForLaunch()) {
++            const u64 mod_title_id = pending_mod_title_id != 0 ? pending_mod_title_id
++                                                              : system.GetApplicationProcessProgramID();
++            auto manifest = Mods::ModRuntime::Discover(system, mod_title_id,
++                                                       pending_mod_build_id);
++            const bool idle = !manifest;
++            if (!manifest) {
++                manifest = Mods::ModRuntime::IdleManifest(mod_title_id);
++            }
++            if (manifest) {
++                mod_runtime.emplace(system, std::move(*manifest));
++                if (idle) {
++                    mod_runtime->MarkIdlePage();
++                }
++                mod_runtime->SetMainMemoryParameters(pending_mod_base, pending_mod_size);
++                mod_runtime->Initialize();
++            }
++            pending_mod_base = 0;
++        }
++
+ 
+         // Initialize cheat engine
+         if (cheat_engine) {
+@@ -657,6 +708,11 @@ struct System::Impl {
+         Common::NoteShutdownProgress();
+         Common::ShutdownWatch::Step("teardown: guest cores");
+         kernel.ShutdownCores();
++        mod_runtime.reset();
++        dsmod_mailbox_address = dsmod_mailbox_size = 0;
++        dsmod_mailbox_epoch_offset.reset();
++        dsmod_mailbox_epoch.store(0, std::memory_order_release);
++        ResetPendingDualScreenMod();
+         Common::NoteShutdownProgress();
+         Common::ShutdownWatch::Step("teardown: services, file system, loader");
+         services.reset();
+@@ -742,6 +798,40 @@ struct System::Impl {
+     std::optional<Tegra::Host1x::Host1x> host1x_core;
+     std::optional<Core::DeviceMemory> device_memory;
+     std::optional<AudioCore::AudioCore> audio_core;
++    std::optional<Mods::ModRuntime> mod_runtime;
++    void ResetPendingDualScreenMod() {
++        pending_mod_build_id = {};
++        pending_mod_base = 0;
++        pending_mod_title_id = 0;
++        pending_mod_size = 0;
++    }
++    std::array<u8, 0x20> pending_mod_build_id{};
++    VAddr pending_mod_base{};
++    u64 pending_mod_title_id{};
++    u64 pending_mod_size{};
++    void InvalidateDualScreenGuestMailbox() {
++        std::scoped_lock lock{dsmod_mailbox_epoch_mutex};
++        if (!dsmod_mailbox_epoch_offset || dsmod_mailbox_size < 4 ||
++            *dsmod_mailbox_epoch_offset > dsmod_mailbox_size - 4) return;
++        auto* process = kernel.ApplicationProcess();
++        if (!process) return;
++        auto* pointer = process->GetMemory().GetPointer<u32>(
++            dsmod_mailbox_address + *dsmod_mailbox_epoch_offset);
++        if (!pointer || reinterpret_cast<uintptr_t>(pointer) % alignof(u32) != 0) return;
++        u32 epoch = dsmod_mailbox_epoch.load(std::memory_order_relaxed) + 1;
++        if (epoch == 0) epoch = 1;
++        u32 expected{};
++        (void)Common::AtomicCompareAndSwap(pointer, u32{}, u32{}, expected);
++        while (!Common::AtomicCompareAndSwap(pointer, epoch, expected, expected)) {}
++        dsmod_mailbox_epoch.store(epoch, std::memory_order_release);
++    }
++    std::mutex dsmod_mailbox_epoch_mutex;
++    std::optional<u32> dsmod_mailbox_epoch_offset;
++    std::atomic<u32> dsmod_mailbox_epoch{};
++    u64 dsmod_mailbox_address{};
++    u64 dsmod_mailbox_size{};
++    InputCommon::InputSubsystem* input_subsystem{};
++
+     std::optional<Memory::CheatEngine> cheat_engine;
+     std::optional<Tools::Freezer> memory_freezer;
+     std::optional<Tools::RenderdocAPI> renderdoc_api;
+@@ -1040,6 +1130,52 @@ FileSys::VirtualFilesystem System::GetFilesystem() const {
+     return impl->virtual_filesystem;
+ }
+ 
++
++bool System::RunWithGuestThreadsSuspended(const std::function<void()>& fn) {
++    return impl->RunWithGuestThreadsSuspended(fn);
++}
++
++void System::SetInputSubsystem(InputCommon::InputSubsystem* input_subsystem) {
++    impl->input_subsystem = input_subsystem;
++}
++
++InputCommon::InputSubsystem* System::GetInputSubsystem() const {
++    return impl->input_subsystem;
++}
++
++void System::SetDualScreenGuestMailbox(u64 address, u64 size, std::optional<u32> epoch_offset) {
++    impl->dsmod_mailbox_address = address;
++    impl->dsmod_mailbox_size = size;
++    impl->dsmod_mailbox_epoch_offset = epoch_offset;
++    impl->dsmod_mailbox_epoch.store(0, std::memory_order_release);
++}
++
++void System::InvalidateDualScreenGuestMailbox() {
++    impl->InvalidateDualScreenGuestMailbox();
++}
++
++u32 System::GetDualScreenGuestMailboxEpoch() const {
++    return impl->dsmod_mailbox_epoch.load(std::memory_order_acquire);
++}
++
++std::pair<u64, u64> System::GetDualScreenGuestMailbox() const {
++    return {impl->dsmod_mailbox_address, impl->dsmod_mailbox_size};
++}
++
++Core::Mods::ModRuntime* System::ModRuntime() {
++    return impl->mod_runtime ? std::addressof(*impl->mod_runtime) : nullptr;
++}
++
++void System::RegisterDualScreenMod(const std::array<u8, 0x20>& build_id, VAddr main_region_begin,
++                                   u64 main_region_size) {
++    if (impl->pending_mod_base != 0) {
++        return; // first module wins (main)
++    }
++    impl->pending_mod_build_id = build_id;
++    impl->pending_mod_base = main_region_begin;
++    impl->pending_mod_size = main_region_size;
++}
++
+ void System::RegisterCheatList(const std::vector<Memory::CheatEntry>& list,
+                                const std::array<u8, 32>& build_id, u64 main_region_begin,
+                                u64 main_region_size) {
+diff --git a/src/core/core.h b/src/core/core.h
+index 0276679..a346996 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #pragma once
++#include <utility>
+ 
+ #include <atomic>
+ #include <cstddef>
+@@ -12,6 +13,7 @@
+ #include <functional>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <span>
+ #include <string>
+ #include <vector>
+@@ -102,6 +104,14 @@ namespace AudioCore {
+ class AudioCore;
+ } // namespace AudioCore
+ 
++namespace InputCommon {
++class InputSubsystem;
++}
++
++namespace Core::Mods {
++class ModRuntime;
++}
++
+ namespace Core::Timing {
+ class CoreTiming;
+ }
+@@ -195,6 +205,9 @@ public:
+     std::unique_lock<std::mutex> StallApplication();
+     void UnstallApplication();
+ 
++    /// Runs `fn` with guest threads suspended (Eden Duo / DSMod guest bridge).
++    bool RunWithGuestThreadsSuspended(const std::function<void()>& fn);
++
+     void SetNVDECActive(bool is_nvdec_active);
+     [[nodiscard]] bool GetNVDECActive();
+ 
+@@ -379,6 +392,21 @@ public:
+     [[nodiscard]] Service::Account::ProfileManager& GetProfileManager();
+     [[nodiscard]] const Service::Account::ProfileManager& GetProfileManager() const;
+ 
++
++    /// DSMod: frontend-owned input subsystem, used for synthetic button presses.
++    void SetInputSubsystem(InputCommon::InputSubsystem* input_subsystem);
++    [[nodiscard]] InputCommon::InputSubsystem* GetInputSubsystem() const;
++
++    /// DSMod: dual-screen mod runtime for the running title (nullptr when the title has no package)
++    [[nodiscard]] Core::Mods::ModRuntime* ModRuntime();
++    void RegisterDualScreenMod(const std::array<u8, 0x20>& build_id, VAddr main_region_begin,
++                               u64 main_region_size);
++    void SetDualScreenGuestMailbox(u64 address, u64 size,
++                                   std::optional<u32> epoch_offset = std::nullopt);
++    void InvalidateDualScreenGuestMailbox();
++    [[nodiscard]] u32 GetDualScreenGuestMailboxEpoch() const;
++    [[nodiscard]] std::pair<u64, u64> GetDualScreenGuestMailbox() const;
++
+     [[nodiscard]] Core::Debugger& GetDebugger();
+     [[nodiscard]] const Core::Debugger& GetDebugger() const;
+ 
+diff --git a/src/core/hle/service/services.cpp b/src/core/hle/service/services.cpp
+index 0b34a79..0d9aae5 100644
+--- a/src/core/hle/service/services.cpp
++++ b/src/core/hle/service/services.cpp
+@@ -12,6 +12,7 @@
+ #include "core/hle/service/audio/audio.h"
+ #include "core/hle/service/bcat/bcat.h"
+ #include "core/hle/service/bpc/bpc.h"
++#include "core/hle/service/dsm/dsm.h"
+ #include "core/hle/service/btdrv/btdrv.h"
+ #include "core/hle/service/btm/btm.h"
+ #include "core/hle/service/caps/caps.h"
+@@ -104,6 +105,7 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
+         {"aoc",        &AOC::LoopProcess},
+         {"apm",        &APM::LoopProcess},
+         {"bcat",       &BCAT::LoopProcess},
++        {"dsm",        &DSM::LoopProcess},
+         {"bpc",        &BPC::LoopProcess},
+         {"btdrv",      &BtDrv::LoopProcess},
+         {"btm",        &BTM::LoopProcess},
+diff --git a/src/core/perf_stats.cpp b/src/core/perf_stats.cpp
+index e089e1e..9d40f4b 100644
+--- a/src/core/perf_stats.cpp
++++ b/src/core/perf_stats.cpp
+@@ -81,6 +81,8 @@ void PerfStats::EndSystemFrame() {
+     }
+     accumulated_frametime += frame_time;
+     system_frames += 1;
++    total_frametime += frame_time; // Eden Duo: GetTotals
++    total_system_frames += 1;
+ 
+     // The whole run past the boot frames, for the summary at game stop.
+     if (current_index > IgnoreFrames) {
+@@ -100,6 +102,7 @@ void PerfStats::EndSystemFrame() {
+ }
+ 
+ void PerfStats::EndGameFrame() {
++    total_game_frames.fetch_add(1, std::memory_order_relaxed); // Eden Duo: GetTotals
+     game_frames.fetch_add(1, std::memory_order_relaxed);
+ }
+ 
+@@ -214,3 +217,9 @@ void SpeedLimiter::DoSpeedLimiting(microseconds current_system_time_us) {
+ }
+ 
+ } // namespace Core
++
++PerfStats::Totals PerfStats::GetTotals() const {
++    std::scoped_lock lock{object_mutex};
++    return {total_game_frames.load(std::memory_order_relaxed), total_system_frames,
++            total_frametime};
++}
+diff --git a/src/core/perf_stats.h b/src/core/perf_stats.h
+index 74b35e4..6b4025c 100644
+--- a/src/core/perf_stats.h
++++ b/src/core/perf_stats.h
+@@ -51,6 +51,14 @@ public:
+      */
+     double GetLastFrameTimeScale() const;
+ 
++    /// Eden Duo: running totals since construction, never reset.
++    struct Totals {
++        u64 game_frames;
++        u64 system_frames;
++        Clock::duration frametime;
++    };
++    Totals GetTotals() const;
++
+ private:
+     mutable std::mutex object_mutex;
+ 
+@@ -83,6 +91,11 @@ private:
+     /// Previously computed fps
+     double previous_fps = 0;
+ 
++    /// Eden Duo: GetTotals counters
++    std::atomic<u64> total_game_frames = 0;
++    u64 total_system_frames = 0;
++    Clock::duration total_frametime = Clock::duration::zero();
++
+     /// Whole-run frame times for the "Run summary:" line at game stop (1% and 0.1% lows): 0.25 ms
+     /// buckets like the test scripts' histograms, the last one holds every frame of 1 s or more.
+     /// Unlike perf_history it never fills up.

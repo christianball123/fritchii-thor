@@ -1,0 +1,50 @@
+--- /tmp/src/eden-base/cpmfile.json	2026-11-18 19:50:09.393973089 +0000
++++ /tmp/src/eden-duo/cpmfile.json	2026-11-18 19:35:15.948650840 +0000
+@@ -78,6 +78,13 @@
+         "repo": "crueter-ci/FFmpeg",
+         "version": "9.0.2-1790726865-946fcce07b"
+     },
++    "fmt": {
++        "bundled": true,
++        "hash": "f0da82c545b01692e9fd30fdfb613dbb8dd9716983dcd0ff19ac2a8d36f74beb5540ef38072fdecc1e34191b3682a8542ecbf3a61ef287dbba0a2679d4e023f2",
++        "min_version": "8",
++        "repo": "fmtlib/fmt",
++        "version": "12.1.0"
++    },
+     "frozen": {
+         "hash": "b8dfe741c82bc178dfc9749d4ab5a130cee718d9ee7b71d9b547cf5f7f23027ed0152ad250012a8546399fcc1e12187efc68d89d6731256c4d2df7d04eef8d5c",
+         "package": "frozen",
+@@ -151,6 +158,15 @@
+         "repo": "V380-Ori/Ryujinx.MoltenVK",
+         "version": "v1.4.1-ryujinx"
+     },
++    "nlohmann": {
++        "bundled": true,
++        "find_args": "CONFIG",
++        "hash": "6cc1e86261f8fac21cc17a33da3b6b3c3cd5c116755651642af3c9e99bb3538fd42c1bd50397a77c8fb6821bc62d90e6b91bcdde77a78f58f2416c62fc53b97d",
++        "min_version": "3.8",
++        "package": "nlohmann_json",
++        "repo": "nlohmann/json",
++        "version": "v3.12.0"
++    },
+     "oaknut": {
+         "hash": "9697e80a7d5d9bcb3ce51051a9a24962fb90ca79d215f1f03ae6b58da8ba13a63b5dda1b4dde3d26ac6445029696b8ef2883f4e5a777b342bba01283ed293856",
+         "min_version": "2.0.1",
+@@ -281,6 +297,17 @@
+         "repo": "eden-emu/tzdb_to_nx",
+         "version": "230326"
+     },
++    "unordered-dense": {
++        "bundled": true,
++        "find_args": "CONFIG",
++        "hash": "d2106f6640f6bfb81755e4b8bfb64982e46ec4a507cacdb38f940123212ccf35a20b43c70c6f01d7bfb8c246d1a16f7845d8052971949cea9def1475e3fa02c8",
++        "package": "unordered_dense",
++        "patches": [
++            "0001-avoid-memset-when-clearing-an-empty-table.patch"
++        ],
++        "repo": "martinus/unordered_dense",
++        "version": "7b55cab841"
++    },
+     "vulkan-headers": {
+         "hash": "d2846ea228415772645eea4b52a9efd33e6a563043dd3de059e798be6391a8f0ca089f455ae420ff22574939ed0f48ed7c6ff3d5a9987d5231dbf3b3f89b484b",
+         "min_version": "1.4.317",

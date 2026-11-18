@@ -1,0 +1,14 @@
+--- /tmp/src/eden-base/src/core/loader/loader.h	2026-11-18 19:50:26.041971224 +0000
++++ /tmp/src/eden-duo/src/core/loader/loader.h	2026-11-18 19:38:07.015848026 +0000
+@@ -342,6 +342,11 @@
+         return ResultStatus::ErrorNotImplemented;
+     }
+ 
++    /// The file this loader was created from.
++    [[nodiscard]] const FileSys::VirtualFile& GetFile() const {
++        return file;
++    }
++
+ protected:
+     FileSys::VirtualFile file;
+     bool is_loaded = false;

@@ -1,0 +1,43 @@
+--- /tmp/src/eden-base/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp	2026-11-18 19:50:26.101971218 +0000
++++ /tmp/src/eden-duo/src/video_core/renderer_vulkan/present/window_adapt_pass.cpp	2026-11-18 19:46:44.634057761 +0000
+@@ -31,6 +31,7 @@
+     : memory_allocator{memory_allocator_}
+     , sampler(std::move(sampler_))
+     , fragment_shader(std::move(fragment_shader_))
++    , companion_renderer(device) // Eden Duo Stage 1
+ {
+     CreateDescriptorSetLayout(device);
+     CreatePipelineLayout(device);
+@@ -49,7 +50,7 @@
+                            std::list<Layer>& layers,
+                            std::span<const Tegra::FramebufferConfig> configs,
+                            const Layout::FramebufferLayout& layout, Frame* dst,
+-                           bool overlay_panels) {
++                           bool overlay_panels, const CompanionQuad* companion) {
+ 
+     const VkFramebuffer host_framebuffer{*dst->framebuffer};
+     const VkRenderPass renderpass{*render_pass};
+@@ -207,6 +208,12 @@
+         }
+     }
+ 
++    // Eden Duo Stage 1 (Simulated/inline dual screen): one quad sampling the companion image the
++    // presenter already owns -- drawn after the game layers, before the overlay panels, only when
++    // inline is actually active this frame (zero cost otherwise). See dsmod_companion_quad.h.
++    const CompanionQuadRenderer::Draw companion_draw =
++        companion_renderer.Prepare(device, scheduler, *descriptor_set_layout, layout, companion);
++
+     scheduler.Record([=, this](vk::CommandBuffer cmdbuf) {
+         const f32 bg_red = Settings::values.bg_red.GetValue() / 255.0f;
+         const f32 bg_green = Settings::values.bg_green.GetValue() / 255.0f;
+@@ -241,6 +248,10 @@
+             cmdbuf.Draw(4, 1, 0, 0);
+         }
+ 
++        // Eden Duo Stage 1: companion pane/quad, after the game layers, before the overlay panels
++        // (controller hints), same overlay pipeline as those -- see dsmod_companion_quad.h.
++        companion_renderer.Record(cmdbuf, graphics_pipeline_layout, *overlay_pipeline, companion_draw);
++
+         for (size_t o = 0; o < overlay_draw.size(); ++o) {
+             if (!overlay_draw[o]) {
+                 continue;

@@ -1,0 +1,10 @@
+--- /tmp/src/eden-base/src/core/hle/service/nvnflinger/hwc_layer.h	2026-11-18 19:50:26.033971225 +0000
++++ /tmp/src/eden-duo/src/core/hle/service/nvnflinger/hwc_layer.h	2026-11-18 19:38:07.007848095 +0000
+@@ -57,6 +57,7 @@
+     android::BufferTransformFlags transform;
+     Common::Rectangle<int> crop_rect;
+     android::Fence acquire_fence;
++    u64 layer_id;
+     u32 layer_stack_mask;
+ };
+ 

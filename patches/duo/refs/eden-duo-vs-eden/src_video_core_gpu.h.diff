@@ -1,0 +1,48 @@
+--- /tmp/src/eden-base/src/video_core/gpu.h	2026-11-18 19:50:26.089971218 +0000
++++ /tmp/src/eden-duo/src/video_core/gpu.h	2026-11-18 19:46:44.626057767 +0000
+@@ -6,12 +6,14 @@
+ 
+ #pragma once
+ 
++#include <functional>
+ #include <memory>
+ 
+ #include "common/bit_field.h"
+ #include "common/common_types.h"
+ #include "core/hle/service/nvdrv/nvdata.h"
+ #include "video_core/cdma_pusher.h"
++#include "video_core/dsmod/aux_routing.h"
+ #include "video_core/framebuffer_config.h"
+ #include "video_core/rasterizer_download_area.h"
+ 
+@@ -24,6 +26,11 @@
+ class ShaderNotify;
+ } // namespace VideoCore
+ 
++namespace VideoCore::DSMod {
++struct ReadbackRequest;
++struct ReadbackResult;
++} // namespace VideoCore::DSMod
++
+ namespace Tegra {
+ class DmaPusher;
+ struct CommandList;
+@@ -198,6 +205,18 @@
+     [[nodiscard]] const Tegra::DmaPusher& DmaPusher() const;
+ 
+     /// Returns a reference to the underlying renderer.
++    /// DSMod second-screen routing state shared by the renderer, dsm:u and the frontend
++    [[nodiscard]] VideoCore::DSMod::AuxRouting& DSModAux();
++
++    /// Eden Duo (runtime 24): whether module texture readbacks can run (asynchronous GPU and a
++    /// renderer that supports them), and queueing one on the GPU thread without waiting. False:
++    /// not queued, `callback` is never called.
++    [[nodiscard]] bool DSModTextureReadbackAvailable() const;
++    /// (gpu.h cannot include video_core/dsmod/texture_readback.h: surface.h includes gpu.h.)
++    bool DSModRequestTextureReadback(
++        const VideoCore::DSMod::ReadbackRequest& request,
++        std::function<void(VideoCore::DSMod::ReadbackResult&&)> callback);
++
+     [[nodiscard]] VideoCore::RendererBase& Renderer();
+ 
+     /// Returns a const reference to the underlying renderer.
