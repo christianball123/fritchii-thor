@@ -132,10 +132,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="thor-${GITHUB_RUN_NUMBER}"
+          notes="Fritchii \`${FRITCHII_REF}\` + Duo/Thor patches (clock-max, Eden Duo companions) for AYN Thor / ArmadaOS. Download Fritchii-Thor-aarch64.AppImage, chmod +x, and replace your existing Thor AppImage path."
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Fritchii Thor $tag" \
-            --notes "Fritchii \`${FRITCHII_REF}\` + Duo/Thor patches (clock-max, Eden Duo companions) for AYN Thor / ArmadaOS.
-
-Download \`Fritchii-Thor-aarch64.AppImage\`, \`chmod +x\`, and replace your existing Thor AppImage path (Steam ROM Manager can keep the same target)." \
+            --notes "$notes" \
             Fritchii-Thor-aarch64.AppImage
