@@ -30,6 +30,7 @@ Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 | `AppLoader::GetFile` + `OpenProgramNcaFromGameFile` (Duo private RomFS) | `hooks/0016` |
 | `fritchii_write_ring.h` `strncpy` bound `size-1` (stringop-truncation) | `hooks/0018` |
 | Duo Companion actions inside `main.ui` widget | `hooks/0019` |
+| DuoQt includes in `main.cpp` / `main_window.cpp` | `hooks/0020` |
 | `video_core` `-frtti` (Fritchii `-fno-rtti` vs `dynamic_cast`) | `tree/…/duo_video_core.cmake` |
 | Aux `RecreateFrame` without Duo `storage` flag | `tree/…/vk_dsmod_aux.cpp` |
 | Thor aarch64: `-DENABLE_WERROR=OFF` + selected `-Wno-error=*` | `packaging/thor/scripts/configure-thor.sh` |
