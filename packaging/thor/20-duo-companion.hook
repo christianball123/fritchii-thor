@@ -1,0 +1,23 @@
+#!/bin/sh
+# Thor build: Eden Duo companions, built into Fritchii. A game with a companion installed shows
+# it on the AYN Thor's bottom screen (Game Mode); install companions from the menu
+# (File > Install Duo Companion...) or with the commands below.
+#
+#   ./Fritchii...AppImage --install-companion Game.dsmod.zip   install a companion package
+#   ./Fritchii...AppImage --list-companions                     show installed companions
+#   ./Fritchii...AppImage --remove-companion TITLEID            remove one
+#   EDEN_DUO_SCREEN=off   don't use the bottom screen for companions
+
+_duo_data="${XDG_DATA_HOME:-$HOME/.local/share}/eden"
+_duo_tool() {
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "python3 is needed for this" >&2
+		exit 1
+	fi
+	exec python3 -I "$APPDIR/bin/duo-companion.py" "$1" "$APPDIR/share/duo-modules" "$_duo_data" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+}
+case "${1:-}" in
+	--install-companion) shift; _duo_tool install "$@" ;;
+	--list-companions) _duo_tool list ;;
+	--remove-companion) shift; _duo_tool remove "$@" ;;
+esac

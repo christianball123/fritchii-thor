@@ -1,0 +1,84 @@
+#!/bin/sh
+# Custom tweaks carried over from the old custom Eden build (Odin 2 / Thor).
+# Choose the GPU driver with EDEN_TURNIP=
+#   (unset)  -> bundled Turnip from this build (Mesa 26.2.6, newest)  [default]
+#   old      -> your previous custom Turnip (Mesa 26.1.2)
+#   system   -> let Eden see the system's own Vulkan drivers
+
+_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/eden/qt-config.ini"
+if [ -f "$_cfg" ]; then
+	sed -i 's/^vulkan_device=1$/vulkan_device=0/' "$_cfg" 2>/dev/null || :
+	# Odin 2: smooth pacing + CPU shader compile (best of v2 fluency + v3 FPS)
+	for _kv in \
+		'force_max_clock=false' 'fast_gpu_time=1' 'barrier_feedback_loops=true' \
+		'use_asynchronous_shaders=true' 'use_asynchronous_gpu_emulation=false' \
+		'skip_cpu_inner_invalidation=false' 'async_presentation=true' 'use_vsync=1' \
+		'frame_pacing_mode=2' 'vram_usage_mode=1' 'max_anisotropy=0' 'fsr_sharpening_slider=0'; do
+		_key="${_kv%%=*}"
+		if grep -q "^${_key}=" "$_cfg" 2>/dev/null; then
+			sed -i "s/^${_key}=.*/${_kv}/" "$_cfg" 2>/dev/null || :
+		fi
+	done
+fi
+
+# Do not let the built-in updater replace this custom build with a stock one
+export DISABLE_AUTO_UPDATES="${DISABLE_AUTO_UPDATES:-1}"
+
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export NODEVICE_SELECT="${NODEVICE_SELECT:-1}"
+export QT_LOGGING_RULES="${QT_LOGGING_RULES:-qt.imageformats.tga.debug=false}"
+
+case "${EDEN_TURNIP:-}" in
+	system) : ;;
+	old)
+		_lib="$APPDIR/lib/turnip-custom-26.1.2/libvulkan_freedreno.so"
+		_icd="${XDG_RUNTIME_DIR:-/tmp}/eden-custom-turnip-$(id -u).json"
+		if [ -f "$_lib" ] && sed "s|REPLACE_ME|$_lib|" "$APPDIR/lib/turnip-custom-26.1.2/icd.json" > "$_icd" 2>/dev/null; then
+			export VK_DRIVER_FILES="$_icd" VK_ICD_FILENAMES="$_icd" SHARUN_ALLOW_SYS_VKICD=0
+		fi
+		;;
+	*)
+		if [ -f "$APPDIR/share/vulkan/icd.d/freedreno_icd.json" ]; then
+			export VK_DRIVER_FILES="$APPDIR/share/vulkan/icd.d/freedreno_icd.json" SHARUN_ALLOW_SYS_VKICD=0
+		fi
+		;;
+esac
+
+# Max CPU + GPU clocks while the emulator runs (restored on exit). Off: EDEN_MAX_CLOCKS=0
+# Asks for the password ONCE (one-time setup), then runs silently every launch.
+# Redo the setup: EDEN_SETUP_CLOCKS=1   Undo: sudo rm /etc/sudoers.d/eden-maxclock
+if [ "${EDEN_MAX_CLOCKS:-1}" = 1 ] && [ -f "$APPDIR/bin/eden-maxclock.sh" ]; then
+	_epid=$$
+	_inst=/usr/local/libexec/eden-maxclock
+	_cfgdir="${XDG_CONFIG_HOME:-$HOME/.config}/eden"
+	_declined="$_cfgdir/maxclock-setup-declined"
+	_ready() {
+		[ -x "$_inst" ] && cmp -s "$_inst" "$APPDIR/bin/eden-maxclock.sh" \
+			&& sudo -n "$_inst" --check >/dev/null 2>&1
+	}
+	if [ "$(id -u)" = 0 ]; then
+		( /bin/sh "$APPDIR/bin/eden-maxclock.sh" "$_epid" >/dev/null 2>&1 & ) || :
+	elif _ready; then
+		( sudo -n "$_inst" "$_epid" >/dev/null 2>&1 & ) || :
+	elif [ ! -f "$_declined" ] || [ "${EDEN_SETUP_CLOCKS:-0}" = 1 ]; then
+		# One-time setup: the only password prompt
+		_tmp="${XDG_RUNTIME_DIR:-/tmp}/eden-maxclock-setup-$(id -u)"
+		mkdir -p "$_tmp" && chmod 700 "$_tmp"
+		cp "$APPDIR/bin/eden-maxclock.sh" "$APPDIR/bin/eden-maxclock-setup.sh" "$_tmp/" 2>/dev/null || :
+		_ok=1
+		if command -v pkexec >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+			pkexec /bin/sh "$_tmp/eden-maxclock-setup.sh" "$_tmp/eden-maxclock.sh" "$(id -un)" && _ok=0
+		elif [ -t 0 ]; then
+			sudo /bin/sh "$_tmp/eden-maxclock-setup.sh" "$_tmp/eden-maxclock.sh" "$(id -un)" && _ok=0
+		fi
+		rm -rf "$_tmp"
+		if [ "$_ok" = 0 ] && _ready; then
+			rm -f "$_declined"
+			( sudo -n "$_inst" "$_epid" >/dev/null 2>&1 & ) || :
+		else
+			# Cancelled or not possible: don't ask again on every launch
+			mkdir -p "$_cfgdir" && : > "$_declined"
+			>&2 echo "eden: max clocks not set up (run once with EDEN_SETUP_CLOCKS=1 to retry)"
+		fi
+	fi
+fi
