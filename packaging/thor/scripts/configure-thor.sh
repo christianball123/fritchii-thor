@@ -10,10 +10,13 @@ PGO="${PGO:-0}"
 PGO_LLVM_VERSION="${PGO_LLVM_VERSION:-23}"
 
 tune="-march=armv8.2-a+crypto+fp16+rcpc+dotprod -mtune=cortex-x3"
-# Ubuntu 24.04 arm64 GCC turns more stock Fritchii warnings into hard errors than
-# Frizti's x86_64 builders (stringop-truncation, etc.). Keep the warnings printed
-# but do not fail the Thor AppImage on them — Duo/logic errors still fail the build.
-werror_relax="-Wno-error"
+# Ubuntu 24.04 arm64 GCC + Fritchii's -Werror=all promotes stock warnings that
+# x86_64 release builders don't hit the same way. -Wno-error=<cat> must be used
+# (plain -Wno-error does not cancel -Werror=all). Keep warnings visible.
+werror_relax="-Wno-error=stringop-truncation -Wno-error=stringop-overflow \
+-Wno-error=stringop-overread -Wno-error=array-bounds -Wno-error=maybe-uninitialized \
+-Wno-error=restrict -Wno-error=format-truncation -Wno-error=format-overflow \
+-Wno-error=use-after-free -Wno-error=free-nonheap-object -Wno-error=uninitialized"
 cflags="$tune $werror_relax"
 cxxflags="$tune $werror_relax"
 
@@ -29,6 +32,7 @@ flags=(
   -DENABLE_UPDATE_CHECKER=OFF
   -DUSE_DISCORD_PRESENCE=OFF
   -DUSE_CCACHE=ON
+  -DENABLE_WERROR=OFF
   "-DCMAKE_C_FLAGS=$cflags"
   "-DCMAKE_CXX_FLAGS=$cxxflags"
 )
