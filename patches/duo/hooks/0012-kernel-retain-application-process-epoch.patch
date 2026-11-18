@@ -1,0 +1,172 @@
+diff --git a/src/core/hle/kernel/kernel.h b/src/core/hle/kernel/kernel.h
+index 7fa6395..c1a2f98 100644
+--- a/src/core/hle/kernel/kernel.h
++++ b/src/core/hle/kernel/kernel.h
+@@ -132,6 +132,15 @@ public:
+     /// Retrieves a const pointer to the application process.
+     const KProcess* ApplicationProcess() const;
+ 
++    /// Captures an owning reference to the application process under the identity lock.
++    KScopedAutoObject<KProcess> RetainApplicationProcess(u64* owner_epoch = nullptr);
++
++    /// Checks application identity while an independently retained process keeps it alive.
++    bool IsApplicationProcess(const KProcess* process) const;
++
++    /// Checks that no application transition occurred since the owning reference was captured.
++    bool IsApplicationProcess(const KProcess* process, u64 owner_epoch) const;
++
+     /// Retrieves the process with the given process ID, or a null object.
+     KScopedAutoObject<KProcess> GetProcessByProcessId(u64 process_id);
+ 
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 8b0defd..4b08ec6 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -50,6 +50,8 @@
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/memory.h"
++#include "hid_core/resources/npad/dsmod_pad_gate.h"
++#include "video_core/gpu.h"
+ 
+ namespace Kernel {
+ 
+@@ -110,6 +112,9 @@ struct KernelCore::Impl {
+     }
+ 
+     void Initialize(KernelCore& kernel) {
++        if (system.ModRuntime() == nullptr) {
++            Core::HID::DSModPadGate::BlockForContextChange(false);
++        }
+         hardware_timer.emplace(kernel);
+         hardware_timer->Initialize();
+ 
+@@ -159,16 +164,24 @@ struct KernelCore::Impl {
+ 
+         CloseServices();
+ 
+-        if (application_process) {
+-            // A process still referenced here is never finalized, so its memory stays mapped in
+-            // the fastmem arena, and the next game's mappings at the same addresses failed: it ran
+-            // on the old game's memory and crashed or hung at boot (a Switch 2 game left its
+-            // process with 55-60 references). Detach the process from the arena, so a late
+-            // finalize can't unmap the next game's memory, and clear the arena.
+-            const u32 references = application_process->GetReferenceCount();
+-            application_process->GetPageTable().GetImpl().fastmem_arena = nullptr;
+-            application_process->Close(system.Kernel());
+-            application_process = nullptr;
++        KProcess* previous_application = nullptr;
++        u32 references = 0;
++        {
++            std::scoped_lock lock{application_process_lock};
++            previous_application = std::exchange(application_process, nullptr);
++            ++application_process_epoch;
++            if (previous_application) {
++                // A process still referenced here is never finalized, so its memory stays mapped
++                // in the fastmem arena, and the next game's mappings at the same addresses failed:
++                // it ran on the old game's memory and crashed or hung at boot (a Switch 2 game
++                // left its process with 55-60 references). Detach the process from the arena, so a
++                // late finalize can't unmap the next game's memory, and clear the arena.
++                references = previous_application->GetReferenceCount();
++                previous_application->GetPageTable().GetImpl().fastmem_arena = nullptr;
++            }
++        }
++        if (previous_application) {
++            previous_application->Close(system.Kernel());
+             if (references > 1) {
+                 LOG_WARNING(Kernel, "Application process still had {} references at shutdown",
+                             references);
+@@ -176,6 +189,9 @@ struct KernelCore::Impl {
+             auto& arena = system.DeviceMemory().buffer;
+             arena.Unmap(0, arena.VirtualSize(), false);
+         }
++        if (system.ModRuntime() == nullptr) {
++            Core::HID::DSModPadGate::BlockForContextChange(false);
++        }
+ 
+         next_object_id = 0;
+         next_kernel_process_id = KProcess::InitialProcessIdMin;
+@@ -386,17 +402,28 @@ struct KernelCore::Impl {
+     }
+ 
+     void SetApplicationProcess(KernelCore& kernel, KProcess* process) {
+-        if (application_process == process)
+-            return;
+-
+-        KProcess* const previous = application_process;
+-        application_process = process;
+-
+-        if (application_process != nullptr)
+-            application_process->Open(kernel);
+-
+-        if (previous != nullptr)
++        KProcess* previous;
++        {
++            std::scoped_lock lock{application_process_lock};
++            if (application_process == process) {
++                return;
++            }
++            if (process != nullptr) {
++                process->Open(kernel);
++            }
++            // Block HID before publishing a new application identity. The old runtime clears
++            // this only after releasing its synthetic inputs; navigation cannot override it.
++            if (application_process != nullptr && system.ModRuntime() != nullptr &&
++                system.GPU().DSModAux().companion_context_active.load(std::memory_order_acquire)) {
++                Core::HID::DSModPadGate::BlockForContextChange(true);
++            }
++            previous = std::exchange(application_process, process);
++            ++application_process_epoch;
++        }
++        // Closing may destroy the process and reenter kernel bookkeeping.
++        if (previous != nullptr) {
+             previous->Close(kernel);
++        }
+     }
+ 
+     /// Sets the host thread ID for the caller.
+@@ -847,7 +874,9 @@ struct KernelCore::Impl {
+     // Lists all processes that exist in the current session.
+     std::mutex process_list_lock;
+     std::vector<KProcess*> process_list;
++    std::mutex application_process_lock;
+     KProcess* application_process{};
++    u64 application_process_epoch{};
+     std::optional<Kernel::GlobalSchedulerContext> global_scheduler_context;
+     std::optional<Kernel::KHardwareTimer> hardware_timer;
+ 
+@@ -967,13 +996,34 @@ void KernelCore::SetApplicationProcess(KProcess* process) {
+ }
+ 
+ KProcess* KernelCore::ApplicationProcess() {
++    std::scoped_lock lock{impl->application_process_lock};
+     return impl->application_process;
+ }
+ 
+ const KProcess* KernelCore::ApplicationProcess() const {
++    std::scoped_lock lock{impl->application_process_lock};
+     return impl->application_process;
+ }
+ 
++KScopedAutoObject<KProcess> KernelCore::RetainApplicationProcess(u64* owner_epoch) {
++    std::scoped_lock lock{impl->application_process_lock};
++    if (owner_epoch != nullptr) {
++        *owner_epoch = impl->application_process_epoch;
++    }
++    return {*this, impl->application_process};
++}
++
++bool KernelCore::IsApplicationProcess(const KProcess* process) const {
++    std::scoped_lock lock{impl->application_process_lock};
++    return process != nullptr && impl->application_process == process;
++}
++
++bool KernelCore::IsApplicationProcess(const KProcess* process, u64 owner_epoch) const {
++    std::scoped_lock lock{impl->application_process_lock};
++    return process != nullptr && impl->application_process == process &&
++           impl->application_process_epoch == owner_epoch;
++}
++
+ KScopedAutoObject<KProcess> KernelCore::GetProcessByProcessId(u64 process_id) {
+     std::scoped_lock lk{impl->process_list_lock};
+     for (auto* const process : impl->process_list)

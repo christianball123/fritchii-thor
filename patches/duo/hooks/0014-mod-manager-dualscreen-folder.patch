@@ -1,0 +1,19 @@
+diff --git a/src/frontend_common/mod_manager.cpp b/src/frontend_common/mod_manager.cpp
+index b1adaeb..d20f4b2 100644
+--- a/src/frontend_common/mod_manager.cpp
++++ b/src/frontend_common/mod_manager.cpp
+@@ -18,11 +18,12 @@ std::vector<std::filesystem::path> GetModFolder(const std::string& root) {
+ 
+     auto callback = [&paths](const std::filesystem::directory_entry& entry) -> bool {
+         const auto name = entry.path().filename().string();
+-        static const std::array<std::string, 5> valid_names = {"exefs",
++        static const std::array<std::string, 6> valid_names = {"exefs",
+                                                                "romfs",
+                                                                "romfs_ext",
+                                                                "cheats",
+-                                                               "romfslite"};
++                                                               "romfslite",
++                                                               "dualscreen"};
+ 
+         if (std::ranges::find(valid_names, name) != valid_names.end()) {
+             const auto parent = entry.path().parent_path();

@@ -1,0 +1,35 @@
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index adc83b1..3d203b7 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -114,7 +114,8 @@ struct GPU::Impl {
+     }
+ 
+     bool DSModTextureReadbackAvailable() const {
+-        return renderer && renderer->ReadRasterizer() &&
++        return is_async && renderer && renderer->ReadRasterizer() &&
++               !shutting_down.load(std::memory_order_relaxed) &&
+                renderer->ReadRasterizer()->DSModSupportsTextureReadback();
+     }
+ 
+@@ -123,12 +124,14 @@ struct GPU::Impl {
+         if (!DSModTextureReadbackAvailable()) {
+             return false;
+         }
+-        // Schedule on GPU thread when Fritchii exposes RequestSyncOperation.
+-        if (!renderer->ReadRasterizer()->DSModReadbackTexture(request, callback)) {
+-            VideoCore::DSMod::ReadbackResult result;
+-            result.status = VideoCore::DSMod::ReadbackStatus::Unsupported;
+-            callback(std::move(result));
+-        }
++        (void)RequestSyncOperation([this, request, callback = std::move(callback)]() mutable {
++            if (!renderer->ReadRasterizer()->DSModReadbackTexture(request, callback)) {
++                VideoCore::DSMod::ReadbackResult result;
++                result.status = VideoCore::DSMod::ReadbackStatus::Unsupported;
++                callback(std::move(result));
++            }
++        });
++        gpu_thread.TickGPU(is_async);
+         return true;
+     }
+ 

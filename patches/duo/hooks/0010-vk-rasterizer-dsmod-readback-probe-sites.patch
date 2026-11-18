@@ -1,0 +1,85 @@
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index c7a6e43..4e85461 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -9,6 +9,7 @@
+ #include <memory>
+ #include <optional>
+ #include <string_view>
++#include <vector>
+ 
+ #include <boost/container/static_vector.hpp>
+ 
+@@ -220,6 +221,13 @@ public:
+     void BindChannel(Tegra::Control::ChannelState& channel) override;
+ 
+     void ReleaseChannel(s32 channel_id) override;
++
++    /// Eden Duo (runtime 24): module texture readback (vk_dsmod_texture_readback.cpp).
++    bool DSModSupportsTextureReadback() const override {
++        return true;
++    }
++    bool DSModReadbackTexture(const VideoCore::DSMod::ReadbackRequest& request,
++                              VideoCore::DSMod::ReadbackCallback& callback) override;
+     std::optional<FramebufferTextureInfo> AccelerateDisplay(const Tegra::FramebufferConfig& config,
+                                                             VAddr framebuffer_addr,
+                                                             u32 pixel_stride);
+@@ -398,6 +406,26 @@ private:
+ 
+     static constexpr VkDeviceSize DEFAULT_BUFFER_SIZE = 4 * sizeof(float);
+ 
++    /// Read one render target back off the GPU and publish it to the second screen.
++    void DSModCaptureRenderTarget(VideoCommon::ImageViewId view_id);
++    /// Eden Duo developer probes, run once per draw (vk_dsmod_rt_probe.cpp).
++    struct DSModProbeState;
++    void DSModProbeRenderTargets(DSModProbeState*& state);
++    /// Hands every module texture readback whose copy the GPU has finished to its callback.
++    /// GPU thread: from TickFrame and before each new readback.
++    void DSModCompleteTextureReadbacks();
++    void DSModLogReadbackMiss(const VideoCore::DSMod::ReadbackRequest& request, int status,
++                              u32 ambiguous = 0);
++    struct DSModPendingReadback {
++        StagingBufferRef staging;
++        u64 tick;
++        size_t row_bytes;
++        VideoCore::Surface::PixelFormat guest_format;
++        VideoCore::DSMod::ReadbackFormat format;
++        VideoCore::DSMod::ReadbackResult result; ///< everything but the pixels
++        VideoCore::DSMod::ReadbackCallback callback;
++    };
++
+     template <typename Func>
+     void PrepareDraw(bool is_indexed, Func&&, bool is_indirect = false);
+ 
+@@ -550,6 +578,9 @@ private:
+     Scheduler& scheduler;
+ 
+     StagingBufferPool staging_pool;
++    VideoCommon::ImageViewId rt_pick_view{};
++    bool rt_pick_pending{false};
++    std::vector<DSModPendingReadback> dsmod_readbacks; ///< in flight, GPU thread only
+     /// FRITCHII_MEMSTAGE_SPLIT_ALLOC: the buffer cache's allocator and staging pool (null when
+     /// off); the references below name them, or memory_allocator and staging_pool.
+     std::unique_ptr<MemoryAllocator> split_buffer_allocator;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 55754ba..8df48aa 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2866,6 +2866,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
+         UpdateDynamicStates(pipeline);
+     }
+ 
++    static DSModProbeState* dsmod_probe{}; // Eden Duo developer probes (vk_dsmod_rt_probe.cpp)
++    DSModProbeRenderTargets(dsmod_probe);
++
+     {
+         const Profile::FineScope queries_scope{Profile::Zone::DrawQueries};
+         query_cache.NotifySegment(true);
+@@ -9602,6 +9605,7 @@ void RasterizerVulkan::TickFrame() {
+     }
+     ComputePipeline::TickUpscalerTrace();
+     draw_counter = 0;
++    DSModCompleteTextureReadbacks(); // Eden Duo (vk_dsmod_texture_readback.cpp)
+     pending_native_work = false;
+     // EDEN_NX2_PROTECT_STATS' frame count, then EXP89's sweep of lingering protections (takes
+     // the device memory's counter_guard: no cache lock may be held here).

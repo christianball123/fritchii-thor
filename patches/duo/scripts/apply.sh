@@ -28,7 +28,9 @@ echo "==> Copying Duo-only tree (mods, dsmod, dsm, Thor Qt, …)"
 cp -a "$ROOT/tree/." .
 
 echo "==> Applying Fritchii-v6.1 hook patches"
-for p in "$ROOT/hooks"/000*.patch; do
+# Numeric order: 0001…0009, 0010… (glob 0*.patch, then sort)
+mapfile -t HOOKS < <(find "$ROOT/hooks" -maxdepth 1 -name '0*.patch' | sort)
+for p in "${HOOKS[@]}"; do
   echo "    $(basename "$p")"
   git apply --whitespace=nowarn "$p"
 done
@@ -41,7 +43,6 @@ fi
 echo "==> Done."
 echo
 echo "Still useful before an aarch64 Thor AppImage ships companions end-to-end:"
-echo "  - Remaining ports in $ROOT/CONFLICTS.md (texture-cache DSMod readback,"
-echo "    kernel application-process epoch, registered_cache, mod_manager, …)."
+echo "  - Remaining notes in $ROOT/CONFLICTS.md (Android-only Duo pieces; aarch64 build)."
 echo "  - Build linux-aarch64 (GitHub Actions ubuntu-24.04-arm)."
 echo "  - Package with packaging/thor/ hooks + share/duo-modules/."
