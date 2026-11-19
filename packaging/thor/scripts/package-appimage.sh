@@ -94,7 +94,7 @@ deploy+=(
 "${deploy[@]}"
 
 APPDIR="$WORKDIR/AppDir"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/duo-modules"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/duo-modules" "$APPDIR/bin" "$APPDIR/share"
 cp -a "$THOR/00-custom-odin.hook" "$THOR/20-duo-companion.hook" "$APPDIR/usr/bin/"
 cp -a "$THOR/eden-maxclock.sh" "$THOR/eden-maxclock-setup.sh" "$APPDIR/usr/bin/"
 cp -a "$THOR/duo-companion.py" "$THOR/nx2_switches.txt" "$APPDIR/usr/bin/"
@@ -110,6 +110,9 @@ else
 fi
 chmod +x "$APPDIR/usr/bin/"*.hook "$APPDIR/usr/bin/"eden-maxclock*.sh \
   "$APPDIR/usr/bin/duo-companion.py" "$APPDIR/usr/bin/AppRun.lib"
+# Compatibility links: menus/hooks historically used $APPDIR/bin and $APPDIR/share.
+ln -sfn ../usr/bin/duo-companion.py "$APPDIR/bin/duo-companion.py"
+ln -sfn ../usr/share/duo-modules "$APPDIR/share/duo-modules"
 
 # Keep TryExec/StartupWMClass as eden for Steam ROM Manager.
 if [ -f "$APPDIR/usr/share/applications/"*.desktop ]; then

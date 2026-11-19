@@ -28,10 +28,18 @@ QString EdenDataDir() {
 }
 
 QString ModulesDir() {
-    // AppImage: $APPDIR/share/duo-modules ; otherwise next to the binary.
+    // AppImage (linuxdeploy): $APPDIR/usr/share/duo-modules; also accept $APPDIR/share.
     const QString appdir = qEnvironmentVariable("APPDIR");
     if (!appdir.isEmpty()) {
-        return appdir + QStringLiteral("/share/duo-modules");
+        const QString usr = appdir + QStringLiteral("/usr/share/duo-modules");
+        if (QDir(usr).exists()) {
+            return usr;
+        }
+        const QString flat = appdir + QStringLiteral("/share/duo-modules");
+        if (QDir(flat).exists()) {
+            return flat;
+        }
+        return usr;
     }
     return QCoreApplication::applicationDirPath() + QStringLiteral("/../share/duo-modules");
 }
@@ -72,9 +80,11 @@ int RunCompanionTool(const QStringList& args, QString* stdout_text = nullptr,
 QString CompanionToolPath() {
     const QString appdir = qEnvironmentVariable("APPDIR");
     if (!appdir.isEmpty()) {
-        const QString p = appdir + QStringLiteral("/bin/duo-companion.py");
-        if (QFileInfo::exists(p)) {
-            return p;
+        for (const char* rel : {"/usr/bin/duo-companion.py", "/bin/duo-companion.py"}) {
+            const QString p = appdir + QString::fromUtf8(rel);
+            if (QFileInfo::exists(p)) {
+                return p;
+            }
         }
     }
     const QString beside = QCoreApplication::applicationDirPath() + QStringLiteral("/duo-companion.py");

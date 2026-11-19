@@ -9,4 +9,6 @@ target_sources(yuzu PRIVATE
     duo/duo_companion_menus.h
     duo/duo_bottom_helper.cpp
     duo/duo_bottom_helper.h
+    duo/duo_aux_window.cpp
+    duo/duo_aux_window.h
 )

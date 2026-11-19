@@ -14,7 +14,11 @@ _duo_tool() {
 		echo "python3 is needed for this" >&2
 		exit 1
 	fi
-	exec python3 -I "$APPDIR/bin/duo-companion.py" "$1" "$APPDIR/share/duo-modules" "$_duo_data" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+	_duo_py="$APPDIR/usr/bin/duo-companion.py"
+	[ -f "$_duo_py" ] || _duo_py="$APPDIR/bin/duo-companion.py"
+	_duo_mods="$APPDIR/usr/share/duo-modules"
+	[ -d "$_duo_mods" ] || _duo_mods="$APPDIR/share/duo-modules"
+	exec python3 -I "$_duo_py" "$1" "$_duo_mods" "$_duo_data" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
 }
 case "${1:-}" in
 	--install-companion) shift; _duo_tool install "$@" ;;

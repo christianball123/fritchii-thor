@@ -87,3 +87,7 @@ against fritchii-v6.1.
 - CI: ccache restore/save; ninja -k 0; QChar guard after apply.
 
 - Hook 0023: provide GetProcessorCount + stub g_cpu_caps on aarch64 (link lichii).
+
+- Hook 0024: Fritchii RestructureMenus keeps Install/Remove Duo Companion.
+- Hook 0025 + duo_aux_window: Thor bottom SetAuxWindow via SDL on /armada-bottom-env DISPLAY.
+- Packaging: usr/bin + APPDIR/bin share compatibility links for duo-companion.

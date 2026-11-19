@@ -1,0 +1,13 @@
+diff --git a/src/yuzu/fritchii/fritchii_ui.cpp b/src/yuzu/fritchii/fritchii_ui.cpp
+--- a/src/yuzu/fritchii/fritchii_ui.cpp
++++ b/src/yuzu/fritchii/fritchii_ui.cpp
+@@ -205,6 +205,9 @@ void RestructureMenus(Ui::MainWindow& ui, QMainWindow& window, const MenuHooks&
+     file->addMenu(ui.menu_recent_files);
+     file->addSeparator();
+     file->addAction(ui.action_Install_File_NAND);
++    // Eden Duo companions (Thor dual-screen packages).
++    file->addAction(ui.action_Install_Duo_Companion);
++    file->addAction(ui.action_Remove_Duo_Companion);
+     file->addSeparator();
+     file->addMenu(ui.menuOpen_Eden_Folders);
+     file->addSeparator();
