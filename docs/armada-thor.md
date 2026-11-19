@@ -78,6 +78,19 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
 Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux).
 
+## Fonts (“needs Switch fonts”)
+
+Nintendo’s shared fonts are **not** in the game dump and are **not** required to play. The build places substitute fonts (`DejaVuSans.ttf`, `BIZUDPGothic-Regular.ttf`) next to `lasrecomp`. Re-run:
+
+```bash
+tools/za/prepare-gamebuild.sh
+# or: tools/za/build-armada.sh
+```
+
+If you still see a font error, you’re likely launching a copy of the binary without those `.ttf` files beside it — run the one under `build/linux/aarch64/za/`.
+
+Optional original Switch look: **Settings → Files → Import fonts**, and pick files from your own firmware dump (names like `nintendo_udsg-r_std_003.bfttf`, `nintendo_ext_003.bfttf`). They are copied into `~/.local/share/zarecomp/fonts/` and used on the next game start. You can keep using **Use substitute font** instead.
+
 ## Suggested first-run settings (F1)
 
 - Resolution: **75%** or lower / Dynamic

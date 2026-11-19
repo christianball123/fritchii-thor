@@ -53,11 +53,25 @@ cp -f runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/m
       tools/gamelib_entry.c tools/modlib_entry.c runtime/hle/hle_symbols.txt \
       "$B/gamelib-src/"
 
+# Bundled substitute fonts (runtime/hle/pl.c): next to the exe so Play works from any cwd /
+# Game Mode shortcut — without these it FATAL("no font… import the Switch fonts").
+cp -f third_party/fonts/DejaVu/DejaVuSans.ttf \
+      third_party/fonts/DejaVu/DejaVuSans-Bold.ttf \
+      third_party/fonts/BIZUDPGothic/BIZUDPGothic-Regular.ttf \
+      third_party/fonts/Baloo2/Baloo2-SemiBold.ttf \
+      "$B/" 2>/dev/null || true
+# keep license notes next to them (optional)
+cp -f third_party/fonts/DejaVu/LICENSE "$B/DejaVu-LICENSE.txt" 2>/dev/null || true
+cp -f third_party/fonts/BIZUDPGothic/OFL.txt "$B/BIZUDPGothic-OFL.txt" 2>/dev/null || true
+cp -f third_party/fonts/Baloo2/OFL.txt "$B/Baloo2-OFL.txt" 2>/dev/null || true
+cp -f tools/za/za-default.ini "$B/za-default.ini" 2>/dev/null || true
+
 # Smoke-check the same paths the runtime resolves from the exe directory
 ok=1
 [ -x "$B/lasgen/lasgen" ] || ok=0
 [ -x "$B/zig/zig" ] || ok=0
 [ -f "$B/gamelib-src/cpu.h" ] || ok=0
+[ -f "$B/DejaVuSans.ttf" ] || ok=0
 [ "$ok" = 1 ] || { echo "prepare-gamebuild: layout incomplete under $B"; exit 1; }
 
 echo "prepare-gamebuild: OK"
@@ -70,6 +84,10 @@ echo "       ./build/linux/$ARCH/za/lasrecomp"
 echo "  B) Normal — put the same extracted/ tree in:"
 echo "       ~/.local/share/zarecomp/extracted/"
 echo "     then run the binary (any cwd) and click Set up the game / Compile now."
+echo
+echo "Fonts: substitute fonts (DejaVu / BIZ UDPGothic) are next to lasrecomp — enough to play."
+echo "  Optional original Switch look: Settings → Files → Import fonts"
+echo "  (nintendo_udsg-r_std_003.bfttf + nintendo_ext_003.bfttf from your firmware)."
 echo
 echo "Check dump:"
 echo "  tools/za/doctor-armada.sh"

@@ -24,8 +24,20 @@ check "lasrecomp" "$B/lasrecomp" || fail=1
 check "lasgen wrapper" "$B/lasgen/lasgen" || fail=1
 check "zig" "$B/zig/zig" || fail=1
 check "gamelib-src/cpu.h" "$B/gamelib-src/cpu.h" || fail=1
+check "DejaVuSans.ttf (substitute font)" "$B/DejaVuSans.ttf" || fail=1
+check "BIZUDPGothic (substitute font)" "$B/BIZUDPGothic-Regular.ttf" || fail=1
 check "tools/venv" "tools/venv/bin/python" || fail=1
 check "tools/gen.py" "tools/gen.py" || fail=1
+echo
+echo "-- optional Nintendo fonts (original in-game look; not required to boot) --"
+FONTS_DIR="$DATA/fonts"
+[ -d "$PWD/fonts" ] && FONTS_DIR="$PWD/fonts"
+if ls "$FONTS_DIR"/nintendo_udsg* "$FONTS_DIR"/nintendo_ext* 2>/dev/null | head -5; then
+    echo "  (found under $FONTS_DIR)"
+else
+    echo "  — none in $FONTS_DIR (OK: substitute fonts are used)."
+    echo "    To import: Settings → Files → Import fonts, or copy *.bfttf/*.ttf into $DATA/fonts/"
+fi
 echo
 
 echo "-- game dump (need ONE of these trees with exefs/main) --"
