@@ -13,8 +13,12 @@
 #ifdef __linux__
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if !defined(__ANDROID__)
+#include <linux/dma-buf.h>
+#endif
 #endif
 
 #include "../../kernel.h"
@@ -745,6 +749,12 @@ void vk_gpuprof_report(void) {
 }
 
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
+#if defined(__linux__) && !defined(__ANDROID__)
+static void tw_dma_sync_for_gpu(void);  // flush CPU writes on the Turnip dma-buf mmap before the GPU reads them
+#else
+static void tw_dma_sync_for_gpu(void) {}
+#endif
+
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
     vk_end_pass();
@@ -787,6 +797,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         if (at == -2) at = ENV("LARECOMP_TEST_LOST_REPORT") ? atol(ENV("LARECOMP_TEST_LOST_REPORT")) : -1;
         if (at > 0 && (long)subr_now.seq == at) { uint64_t d = 0; vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &d); lost_report(d); }
     }
+    // Guest CPU wrote the dma-buf via mmap (not vkMapMemory): flush those lines before the GPU samples them as VBs.
+    tw_dma_sync_for_gpu();
     rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands; its vkQueueSubmit2 time is in RecStats)
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
@@ -2545,9 +2557,8 @@ static GWin gwin_ = {HEAP_BASE, HEAP_MAX, 0, false};
 static atomic_bool gwin_done;
 #if defined(__linux__) && !defined(__ANDROID__)
 // Top of Z-A's phys window shared with Turnip via dma-buf (see turnip_window_* below).
-// Evidence on Thor: ~1600–2048 MB + XFB mirror on + direct gmem VBs = head + body (body noisy if
-// HOST_CACHED). Whole-window share (0) + mirror on = head only; mirror off = nothing; force-copy VBs =
-// head only. Keep the top cap; LARECOMP_TURNIP_WINDOW_MB overrides.
+// Top ~2048 MB + XFB mirror on + direct gmem VBs + HOST_CACHED + DMA_BUF sync before submit.
+// Uncached hid the body (5bb2); missing dma-buf sync left cached body as rainbow (8066).
 #define TW_CAP_MB 2048ull
 static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax);
 #endif
@@ -5161,15 +5172,22 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 // Mirror Android: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
 //
 // Share the top TW_CAP_MB of Z-A's phys window (dma-buf pieces + sparse buffer), set up at gwin_pick.
+// CPU touches the window through mmap(dma-buf); without DMA_BUF_IOCTL_SYNC the GPU can sample stale
+// HOST_CACHED lines (head OK from XFB mirror, body rainbow/missing). Keep fds and sync before submit.
 #define TW_MAX 32
 #define TW_PIECE (128ull << 20)
 // TW_CAP_MB near gwin_pick.
 static int tw_n;
 static VkDeviceMemory tw_mem[TW_MAX];
+static int tw_fd[TW_MAX];  // kept open for DMA_BUF_IOCTL_SYNC; -1 when unused
 static uint64_t tw_off[TW_MAX], tw_size[TW_MAX];
 static uint64_t tw_base, tw_span;  // absolute guest base + span actually mapped
 static bool tw_ready;
 static pthread_mutex_t tw_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void tw_fd_clear(void) {
+    for (int i = 0; i < TW_MAX; i++) tw_fd[i] = -1;
+}
 
 static bool tw_is_adreno(void) {
     return g_vk.props.vendorID == 0x5143 ||
@@ -5185,11 +5203,25 @@ static void tw_restore_anon(uint64_t base, uint64_t span) {
         LOG("[vk] turnip window: restore anonymous map at %llx failed (%s)\n", (unsigned long long)base, strerror(errno));
 }
 
+static void tw_dma_sync_for_gpu(void) {
+    if (!tw_ready) return;
+    // End a CPU write session so write-back caches hit memory before the GPU reads the sparse buffer as VB/SSBO.
+    for (int i = 0; i < tw_n; i++) {
+        if (tw_fd[i] < 0) continue;
+        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW};
+        if (ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync) && errno != ENOTTY && errno != EINVAL) {
+            static int nlog;
+            if (nlog++ < 5) LOG("[vk] turnip window: DMA_BUF_IOCTL_SYNC failed (%s)\n", strerror(errno));
+        }
+    }
+}
+
 static void tw_free(void) {
     uint64_t b = tw_base, s = tw_span;
     for (int i = 0; i < tw_n; i++) {
         if (tw_mem[i]) vkFreeMemory(g_vk.dev, tw_mem[i], NULL);
         tw_mem[i] = VK_NULL_HANDLE;
+        if (tw_fd[i] >= 0) close(tw_fd[i]), tw_fd[i] = -1;
     }
     tw_n = 0;
     tw_ready = false;
@@ -5211,6 +5243,8 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     const char *e = ENV("LARECOMP_TURNIP_WINDOW");
     if (e && !atoi(e)) return false;
     if (!tw_is_adreno() || g_vk.host_import || !g_vk.dmabuf || !g_vk.dev || !gbase || !gmax) return false;
+    static int fds_inited;
+    if (!fds_inited) tw_fd_clear(), fds_inited = 1;
 
     // Exact same top-anchored range as gmem_import (includes the storage-copies ring when present).
     // Do not shrink again here: capping below gmem_window_get left tw_span 64 MB short of the
@@ -5253,10 +5287,10 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
 
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    // Prefer *uncached* host-visible for VB sampling (type 0x7). HOST_CACHED (0xf) left the body as rainbow noise
-    // while the XFB mirror kept the head OK. Do NOT force guest_copy for these VBs — that dropped host vertex
-    // traffic to 0 and hid the body. LARECOMP_TURNIP_CACHED=1: old cached-first order.
-    bool want_cached = ENV("LARECOMP_TURNIP_CACHED") && atoi(ENV("LARECOMP_TURNIP_CACHED"));
+    // Prefer HOST_CACHED|COHERENT (Android Adreno / Thor log 8066: head + visible body). Uncached (5bb2) kept
+    // the same host-VB traffic but the body vanished. Rainbow on cached was from missing DMA_BUF_IOCTL_SYNC
+    // (mmap bypasses vkMapMemory coherency) — tw_dma_sync_for_gpu fixes that. LARECOMP_TURNIP_UNCACHED=1: debug.
+    bool want_uncached = ENV("LARECOMP_TURNIP_UNCACHED") && atoi(ENV("LARECOMP_TURNIP_UNCACHED"));
     const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (uint64_t off = 0; off < span; off += TW_PIECE) {
         uint64_t size = span - off < TW_PIECE ? span - off : TW_PIECE;
@@ -5285,7 +5319,7 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
         vkDestroyBuffer(g_vk.dev, probe, NULL);
         uint32_t type = UINT32_MAX;
         for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++) {
-            bool cached_pass = want_cached ? (pass == 0) : (pass == 1);
+            bool cached_pass = want_uncached ? (pass == 1) : (pass == 0);
             for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
                 if (!(req.memoryTypeBits >> i & 1)) continue;
                 VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
@@ -5325,9 +5359,9 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
             goto fail;
         }
         void *at = mmap((void *)(uintptr_t)(base + off), (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-        close(fd);
         if (at != (void *)(uintptr_t)(base + off)) {
             LOG("[vk] turnip window: mmap MAP_FIXED failed at %llx (%s)\n", (unsigned long long)(base + off), strerror(errno));
+            close(fd);
             free(keep);
             vkFreeMemory(g_vk.dev, mem, NULL);
             goto fail;
@@ -5336,7 +5370,9 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
             memcpy(at, keep, (size_t)size);
             free(keep);
         }
+        // Keep the fd for DMA_BUF_IOCTL_SYNC (mmap alone does not give Vulkan host-cache coherency).
         tw_mem[tw_n] = mem;
+        tw_fd[tw_n] = fd;
         tw_off[tw_n] = off;
         tw_size[tw_n] = size;
         tw_n++;
@@ -5347,7 +5383,12 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     tw_base = base;
     tw_span = span;
     tw_ready = true;
-    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU\n", tw_n,
+    {
+        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW};
+        for (int i = 0; i < tw_n; i++)
+            if (tw_fd[i] >= 0) ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync);
+    }
+    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU (DMA_BUF sync on)\n", tw_n,
         (unsigned long long)(span >> 20), (unsigned long long)base);
     pthread_mutex_unlock(&tw_lock);
     return true;

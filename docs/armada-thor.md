@@ -80,24 +80,25 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top 2048 MB** of Z-A’s guest phys window via host-visible **uncached** dma-buf pieces + a sparse buffer, set up at `gwin_pick`, with the **XFB mirror on**.
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top 2048 MB** of Z-A’s guest phys window via **HOST_CACHED** dma-buf pieces + a sparse buffer, set up at `gwin_pick`, with the **XFB mirror on**, and calls **`DMA_BUF_IOCTL_SYNC`** before each GPU submit (CPU wrote the map via `mmap`, not `vkMapMemory`).
 
-Thor evidence (do not “simplify” these without a new log):
+Thor evidence:
 
 | Config | Result |
 |--------|--------|
-| Mirror **off** | Nothing (no head, no body) |
-| Whole 3285 MB window + mirror on | Head only |
-| Force-copy gmem VBs (`GMEM_VB=0`) | Head only (`vertices … host` → 0) |
-| Top ~1600–2048 MB + mirror on + **direct** gmem VBs | Head + body (body was rainbow when memory was HOST_CACHED) |
-| Top 2048 MB + mirror on + **uncached** + direct VBs | Target path |
+| Mirror **off** | Nothing |
+| Whole 3285 MB window | Head only |
+| Force-copy gmem VBs | Head only (`host` → 0) |
+| Top window + **uncached** + direct VBs (5bb2) | Head only (same host traffic, body gone) |
+| Top window + **cached** + direct VBs, no dma-buf sync (8066) | Head + rainbow body |
+| Top window + **cached** + direct VBs + **DMA_BUF sync** | Target path |
 
 ### Fix (needs rebuild)
 
 ```bash
 git pull
 tools/za/build-armada.sh
-tools/za/fix-graphics-armada.sh   # gpu_xfb_mirror=on
+tools/za/fix-graphics-armada.sh
 ./build/linux/aarch64/za/lasrecomp
 ```
 
@@ -105,21 +106,21 @@ Good log lines:
 
 ```
 [vk] turnip window: sharing top 2048 MB …
-[vk] turnip window: memory type … (uncached)
-[vk] guest heap imported for shader global memory: …
+[vk] turnip window: memory type … (cached)
+[vk] turnip window: … shared with the GPU (DMA_BUF sync on)
 [vk] transform feedback mirror on (Adreno/Turnip Linux …)
 ```
 
-In the character creator, frame stats must show **non-zero `host`** vertices (body), not only `cached` (head/XFB).
+Creator frames must show **non-zero `host`** vertices.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible character on Linux Turnip |
-| `LARECOMP_TURNIP_CACHED=1` | HOST_CACHED dma-buf (body rainbow noise) |
-| `LARECOMP_TURNIP_GMEM_VB=0` | Force VB copy (hides body — debug only) |
-| `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (solid blocks) |
+| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Linux Turnip |
+| `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body on Thor) |
+| `LARECOMP_TURNIP_GMEM_VB=0` | Force VB copy (hides body) |
+| `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 | `LARECOMP_TURNIP_WINDOW_MB=1600` | Smaller top window if allocate fails |
 
 ### Gamescope HDR

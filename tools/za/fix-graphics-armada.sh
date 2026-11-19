@@ -1,14 +1,11 @@
 #!/bin/bash
-# Soften video settings + document the Adreno/Turnip guest-window fix for AYN Thor / Armada.
+# Soften video settings for AYN Thor / Armada (Adreno + Mesa Turnip).
 #
-# Rebuild required after git pull (dma-buf window is compiled into lasrecomp):
+# Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Proven Thor path (do not change casually):
-#   top 2048 MB dma-buf + uncached + XFB mirror ON + direct gmem VBs
-# Whole-window / mirror-off / force-copy each regressed the character creator.
-# Override window size only if allocate fails:
-#   LARECOMP_TURNIP_WINDOW_MB=1600 ./build/linux/aarch64/za/lasrecomp
+# Target path: top 2048 MB HOST_CACHED dma-buf + DMA_BUF_IOCTL_SYNC before submit
+#              + XFB mirror ON + direct gmem VBs.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -44,21 +41,16 @@ patch_key gpu_xfb_mirror on
 
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
-  echo "fix-graphics-armada: cleared $DATA/cache (shader / pipeline cache)"
+  echo "fix-graphics-armada: cleared $DATA/cache"
 fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Thor: top 2048 MB dma-buf + uncached + XFB mirror ON + direct gmem VBs"
-echo
-echo "Rebuild:"
-echo "  tools/za/build-armada.sh"
-echo "  $B/lasrecomp"
+echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
 echo "Good log lines:"
-echo "  [vk] turnip window: sharing top 2048 MB …"
-echo "  [vk] turnip window: memory type … (uncached)"
+echo "  [vk] turnip window: sharing top … MB …"
+echo "  [vk] turnip window: memory type … (cached)"
+echo "  [vk] turnip window: … shared with the GPU (DMA_BUF sync on)"
 echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
-echo "  vertices … cached … host   ← host must be non-zero in the creator"
-echo
-echo "If still broken, send $DATA/lasrecomp.log"
+echo "  vertices … cached … host   ← host must be non-zero"
