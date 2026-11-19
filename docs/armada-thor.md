@@ -80,14 +80,15 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~1.5 GB** of Z-A’s guest phys window with the GPU via host-visible dma-buf pieces + a sparse buffer (XFB / character skinning live near the top). Mapping the full ~3.2 GB mid-frame blew Thor’s ~3 GB memory budget, stalled the render thread, then boot step #271 timed out (`signal 11 accessing 0xd0`).
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~2 GB** of Z-A’s guest phys window with the GPU via host-visible dma-buf pieces + a sparse buffer. Mapping the full ~3.2 GB mid-frame blew Thor’s ~3 GB memory budget, stalled the render thread, then boot step #271 timed out (`signal 11 accessing 0xd0`).
 
 | Log symptom | Meaning |
 |-------------|---------|
 | `gmem … import off` + solid colour character | No shared window (old binary) |
 | `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
-| `turnip window: … 1536 MB` then `gmem import: -8` | Range mismatch (rebuild — ring must be included) |
-| `guest heap imported …` + `import on` + character visible | Expected healthy path |
+| `gmem import: -8` after pieces shared | Range mismatch (rebuild) |
+| Head OK, body = rainbow noise + `transform feedback mirror on` | XFB mirror on Adreno — set `LARECOMP_VK_XFB_MIRROR=0` or rebuild |
+| `guest heap imported` + `transform feedback mirror off` + full character | Expected healthy path |
 
 ### Fix (needs rebuild)
 
@@ -102,18 +103,19 @@ Good log lines:
 
 ```
 [vk] host memory import …: no — Adreno/Turnip will use dma-buf …
-[vk] turnip window: sharing top 1536 MB of …
-[vk] turnip window: N dma-buf pieces (1536 MB) … shared with the GPU
-[vk] gmem: … import on (turnip dma-buf window)
+[vk] turnip window: sharing top … MB …
+[vk] guest heap imported for shader global memory: …
+[vk] transform feedback mirror off (Adreno/Turnip …)
 ```
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
+| `LARECOMP_VK_XFB_MIRROR=0` | Off (default on Adreno). Try first if body is rainbow noise |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (debug; character blocks again) |
-| `LARECOMP_TURNIP_WINDOW_MB=1024` | Smaller top window if allocate still fails |
-| `LARECOMP_VK_GMEM_WINDOW=<MB>` | Override gmem import size (keep ≤ ~1536 on Thor) |
+| `LARECOMP_TURNIP_WINDOW_MB=1536` | Smaller top window if allocate fails |
+| `LARECOMP_VK_GMEM_WINDOW=<MB>` | Override gmem import size (keep ≤ ~2048 on Thor) |
 
 ### Gamescope HDR
 
@@ -184,7 +186,7 @@ export LARECOMP_VK_D24=1
 - `tools/za/build-linux.sh` / `dist-linux.sh`: native **aarch64** (and existing x86_64)
 - `tools/za/build-armada.sh`: Thor/Armada wrapper
 - Vulkan (vendor `0x5143`): quad-control default, XFB mirror auto-off, D24 without blit-DST, pipeline-bind state invalidate, drop missing device features
-- Turnip dma-buf guest window (top ~1.5 GB, set up at gwin pick) when `VK_EXT_external_memory_host` is missing
+- Turnip dma-buf guest window (top ~2 GB, set up at gwin pick) when `VK_EXT_external_memory_host` is missing; XFB mirror auto-off on Adreno
 
 ## Reporting issues
 
