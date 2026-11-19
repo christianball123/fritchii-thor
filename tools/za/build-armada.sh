@@ -21,6 +21,14 @@ if [ "$PAGESIZE" != 4096 ] && [ "$PAGESIZE" != 16384 ]; then
     echo "build-armada: warning: page size $PAGESIZE (only 4K and 16K are supported; 64K kernels will not work)"
 fi
 
+# Friendly hint before the full pkg-config scan fails on a fresh Armada image
+if [ "${PKGCHECK:-1}" != 0 ] && ! pkg-config --exists x11 2>/dev/null; then
+    echo "build-armada: host build headers not found (typical on a fresh Armada image)."
+    echo "  Layer them, reboot once, then re-run this script:"
+    echo "    tools/za/install-deps-armada.sh && sudo systemctl reboot"
+    echo
+fi
+
 if [ "${DIST:-0}" = 1 ]; then
     # Armada is Fedora-based: .deb is optional. ZIP is the reliable install path.
     DEB=${DEB:-0} ZAIMPORT=${ZAIMPORT:-1} ZIP=${ZIP:-1} tools/za/dist-linux.sh

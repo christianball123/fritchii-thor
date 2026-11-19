@@ -20,26 +20,22 @@ Do **not** run the x86_64 AppImage under FEX for this title if you can avoid it:
 
 ## Build on the Thor (recommended)
 
-1. In Desktop Mode, install build tools (package names vary with Armada/Fedora updates), roughly:
+Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps with **`rpm-ostree`**, then **reboot once**. Plain `dnf install` / `apt install` will not work on the host.
+
+1. In Desktop Mode, from this tree:
 
    ```bash
-   sudo dnf install git clang lld cmake ninja-build pkgconf-pkg-config python3 \
-       libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel \
-       libXScrnSaver-devel libXfixes-devel libXtst-devel libxkbcommon-devel \
-       wayland-devel wayland-protocols-devel libdecor-devel mesa-libEGL-devel \
-       libdrm-devel mesa-libgbm-devel pulseaudio-libs-devel alsa-lib-devel \
-       pipewire-devel dbus-devel systemd-devel ibus-devel vulkan-loader-devel \
-       patchelf llvm binutils zip
+   chmod +x tools/za/install-deps-armada.sh tools/za/build-armada.sh
+   tools/za/install-deps-armada.sh
+   sudo systemctl reboot
    ```
 
-   If `pkg-config` checks fail, set `PKGCHECK=0` only after the matching `-devel` packages are installed, or after `build/linux/aarch64/deps` already exists.
+   That layers clang, SDL3 backend `-devel` headers, Vulkan loader headers, etc. After reboot, `pkg-config --exists x11 wayland-client` should succeed.
 
-2. Clone this tree and build the start screen (no game files needed yet):
+2. Build the start screen (no game files needed yet):
 
    ```bash
-   git clone <this-repo-url> PokeZ-Armada
-   cd PokeZ-Armada
-   chmod +x tools/za/build-armada.sh
+   cd ~/PokeZ-Armada   # or wherever you cloned
    tools/za/build-armada.sh
    ```
 

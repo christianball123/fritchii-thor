@@ -31,30 +31,108 @@ if [ "$ARCH" = x86_64 ]; then
     grep -qw avx2 /proc/cpuinfo || echo "build-linux: warning: this CPU has no AVX2 - the game code needs it (x86-64-v3)"
 fi
 
-# ---- what the system must have: tools, and SDL3's backend headers (pkg-config module -> Debian / Ubuntu package)
-# Fedora / Armada: the same libraries under different package names; PKGCHECK=0 skips the apt hint.
-missing=()
-for t in clang:clang ld.lld:lld cmake:cmake ninja:ninja-build pkg-config:pkg-config python3:python3 \
-         curl:curl git:git; do
-    command -v "${t%%:*}" >/dev/null || missing+=("${t#*:}")
-done
-# nasm is only used by some x86_64 deps paths; keep it required on x86_64
+# ---- what the system must have: tools, and SDL3's backend headers (pkg-config modules)
+# Track missing *keys*, then print distro-specific package install lines (Debian apt vs Fedora/Armada rpm-ostree).
+missing_keys=()
+need() { # key command-or-empty
+    local key=$1 cmd=${2:-}
+    if [ -n "$cmd" ]; then
+        command -v "$cmd" >/dev/null || missing_keys+=("$key")
+    fi
+}
+need clang clang
+need lld ld.lld
+need cmake cmake
+need ninja ninja
+need pkg-config pkg-config
+need python3 python3
+need curl curl
+need git git
+# nasm is only used by some x86_64 deps paths
 if [ "$ARCH" = x86_64 ]; then
-    command -v nasm >/dev/null || missing+=(nasm)
+    need nasm nasm
 fi
-python3 -c 'import venv, ensurepip' 2>/dev/null || missing+=(python3-venv)
-for m in x11:libx11-dev xext:libxext-dev xrandr:libxrandr-dev xcursor:libxcursor-dev xi:libxi-dev \
-         xscrnsaver:libxss-dev xfixes:libxfixes-dev xtst:libxtst-dev xkbcommon:libxkbcommon-dev \
-         wayland-client:libwayland-dev wayland-protocols:wayland-protocols libdecor-0:libdecor-0-dev egl:libegl-dev \
-         libdrm:libdrm-dev gbm:libgbm-dev libpulse:libpulse-dev alsa:libasound2-dev libpipewire-0.3:libpipewire-0.3-dev \
-         dbus-1:libdbus-1-dev libudev:libudev-dev ibus-1.0:libibus-1.0-dev; do
-    pkg-config --exists "${m%%:*}" || missing+=("${m#*:}")
+python3 -c 'import venv, ensurepip' 2>/dev/null || missing_keys+=(python3-venv)
+# pkg-config module -> key (same key used in the package maps below)
+for m in x11 xext xrandr xcursor xi xscrnsaver xfixes xtst xkbcommon \
+         wayland-client wayland-protocols libdecor-0 egl libdrm gbm \
+         libpulse alsa libpipewire-0.3 dbus-1 libudev ibus-1.0; do
+    pkg-config --exists "$m" 2>/dev/null || missing_keys+=("$m")
 done
-if [ ${#missing[@]} -gt 0 ] && [ "${PKGCHECK:-1}" != 0 ]; then
-    echo "build-linux: missing system packages. On Debian/Ubuntu/Mint:"
-    echo "    sudo apt install ${missing[*]}"
-    echo "On Fedora / Armada OS, install the matching -devel packages (SDL3 backends: X11, Wayland, audio, udev),"
-    echo "or set PKGCHECK=0 if deps/ is already built."
+# unique, stable order
+if [ ${#missing_keys[@]} -gt 0 ]; then
+    mapfile -t missing_keys < <(printf '%s\n' "${missing_keys[@]}" | awk 'NF && !seen[$0]++')
+fi
+if [ ${#missing_keys[@]} -gt 0 ] && [ "${PKGCHECK:-1}" != 0 ]; then
+    # Debian/Ubuntu/Mint package names
+    declare -A DEB=(
+        [clang]=clang [lld]=lld [cmake]=cmake [ninja]=ninja-build [pkg-config]=pkg-config
+        [python3]=python3 [python3-venv]=python3-venv [curl]=curl [git]=git [nasm]=nasm
+        [x11]=libx11-dev [xext]=libxext-dev [xrandr]=libxrandr-dev [xcursor]=libxcursor-dev
+        [xi]=libxi-dev [xscrnsaver]=libxss-dev [xfixes]=libxfixes-dev [xtst]=libxtst-dev
+        [xkbcommon]=libxkbcommon-dev [wayland-client]=libwayland-dev [wayland-protocols]=wayland-protocols
+        [libdecor-0]=libdecor-0-dev [egl]=libegl-dev [libdrm]=libdrm-dev [gbm]=libgbm-dev
+        [libpulse]=libpulse-dev [alsa]=libasound2-dev [libpipewire-0.3]=libpipewire-0.3-dev
+        [dbus-1]=libdbus-1-dev [libudev]=libudev-dev [ibus-1.0]=libibus-1.0-dev
+    )
+    # Fedora / Armada (bootc) package names
+    declare -A RPM=(
+        [clang]=clang [lld]=lld [cmake]=cmake [ninja]=ninja-build [pkg-config]=pkgconf-pkg-config
+        [python3]=python3 [python3-venv]=python3 [curl]=curl [git]=git [nasm]=nasm
+        [x11]=libX11-devel [xext]=libXext-devel [xrandr]=libXrandr-devel [xcursor]=libXcursor-devel
+        [xi]=libXi-devel [xscrnsaver]=libXScrnSaver-devel [xfixes]=libXfixes-devel [xtst]=libXtst-devel
+        [xkbcommon]=libxkbcommon-devel [wayland-client]=wayland-devel [wayland-protocols]=wayland-protocols-devel
+        [libdecor-0]=libdecor-devel [egl]=mesa-libEGL-devel [libdrm]=libdrm-devel [gbm]=mesa-libgbm-devel
+        [libpulse]=pulseaudio-libs-devel [alsa]=alsa-lib-devel [libpipewire-0.3]=pipewire-devel
+        [dbus-1]=dbus-devel [libudev]=systemd-devel [ibus-1.0]=ibus-devel
+    )
+    deb_pkgs=() rpm_pkgs=()
+    for k in "${missing_keys[@]}"; do
+        [ -n "${DEB[$k]:-}" ] && deb_pkgs+=("${DEB[$k]}")
+        [ -n "${RPM[$k]:-}" ] && rpm_pkgs+=("${RPM[$k]}")
+    done
+    mapfile -t deb_pkgs < <(printf '%s\n' "${deb_pkgs[@]}" | awk 'NF && !seen[$0]++')
+    mapfile -t rpm_pkgs < <(printf '%s\n' "${rpm_pkgs[@]}" | awk 'NF && !seen[$0]++')
+
+    echo "build-linux: missing build dependencies (${#missing_keys[@]} checks failed)."
+    echo "Missing keys: ${missing_keys[*]}"
+    echo
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+    fi
+    is_fedora=0
+    case "${ID:-}-${ID_LIKE:-}" in
+        *fedora*|*rhel*|*centos*) is_fedora=1 ;;
+    esac
+    if [ -d /run/ostree-booted ] || [ -e /ostree ] || command -v rpm-ostree >/dev/null 2>/dev/null; then
+        is_fedora=1
+    fi
+
+    if [ "$is_fedora" = 1 ]; then
+        echo "This looks like Fedora / Armada OS. Install the packages, then re-run the build:"
+        echo
+        if command -v rpm-ostree >/dev/null; then
+            echo "  # Armada is image-based: layer packages, then reboot once"
+            echo "  tools/za/install-deps-armada.sh"
+            echo "  # or:"
+            echo "  sudo rpm-ostree install ${rpm_pkgs[*]} patchelf llvm binutils zip vulkan-loader-devel"
+            echo "  sudo systemctl reboot"
+        else
+            echo "  sudo dnf install ${rpm_pkgs[*]} patchelf llvm binutils zip vulkan-loader-devel"
+        fi
+        echo
+        echo "Docs: docs/armada-thor.md"
+    else
+        echo "Debian / Ubuntu / Mint:"
+        echo "  sudo apt install ${deb_pkgs[*]}"
+        echo
+        echo "Fedora / Armada OS:"
+        echo "  sudo rpm-ostree install ${rpm_pkgs[*]} patchelf llvm binutils zip vulkan-loader-devel   # then reboot"
+        echo "  # or: sudo dnf install … on a mutable Fedora"
+    fi
+    echo
+    echo "PKGCHECK=0 skips this check (only if deps are already installed / build/linux/\$ARCH/deps exists)."
     exit 1
 fi
 
