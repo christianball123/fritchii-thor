@@ -4,10 +4,11 @@
 # Rebuild required after git pull (dma-buf window is compiled into lasrecomp):
 #   tools/za/build-armada.sh
 #
-# Default: whole Z-A guest phys window shared with Turnip (Android AHB layout), set up at
-# gwin_pick. If allocate OOMs, the binary retries the top 2048 MB. Override:
-#   LARECOMP_TURNIP_WINDOW_MB=2048 ./build/linux/aarch64/za/lasrecomp
-#   LARECOMP_TURNIP_WINDOW=0 …   # disable share (debug)
+# Proven Thor path (do not change casually):
+#   top 2048 MB dma-buf + uncached + XFB mirror ON + direct gmem VBs
+# Whole-window / mirror-off / force-copy each regressed the character creator.
+# Override window size only if allocate fails:
+#   LARECOMP_TURNIP_WINDOW_MB=1600 ./build/linux/aarch64/za/lasrecomp
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -22,12 +23,10 @@ if [ -d "$B" ] && [ -f "$ROOT/tools/za/za-default-armada.ini" ]; then
   echo "fix-graphics-armada: wrote $B/za-default.ini"
 fi
 
-# Patch / create player settings (keep unknown keys; override the heavy desktop preset)
 touch "$INI"
 patch_key() {
   local k="$1" v="$2"
   if grep -q "^${k}[[:space:]]*=" "$INI" 2>/dev/null; then
-    # portable sed in-place
     sed -i "s|^${k}[[:space:]]*=.*|${k} = ${v}|" "$INI"
   else
     printf '%s = %s\n' "$k" "$v" >>"$INI"
@@ -41,10 +40,8 @@ patch_key fps60 0
 patch_key fps60_lock 0
 patch_key aniso16 0
 patch_key show_fps 1
-# Linux Turnip needs the XFB mirror (Android AHB can leave it off). Whole-window + mirror off = invisible character.
 patch_key gpu_xfb_mirror on
 
-# Stale pipelines from a previous bad run can stick; safe to clear
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
   echo "fix-graphics-armada: cleared $DATA/cache (shader / pipeline cache)"
@@ -52,17 +49,16 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Thor: full dma-buf window + cached pieces + XFB mirror ON + direct gmem VBs"
+echo "Thor: top 2048 MB dma-buf + uncached + XFB mirror ON + direct gmem VBs"
 echo
-echo "Rebuild (required for character fix):"
+echo "Rebuild:"
 echo "  tools/za/build-armada.sh"
 echo "  $B/lasrecomp"
 echo
 echo "Good log lines:"
-echo "  [vk] gmem window: whole guest window (Adreno/Turnip dma-buf)"
-echo "  [vk] turnip window: memory type … (cached)"
-echo "  [vk] turnip window: sharing whole … MB …"
+echo "  [vk] turnip window: sharing top 2048 MB …"
+echo "  [vk] turnip window: memory type … (uncached)"
 echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
+echo "  vertices … cached … host   ← host must be non-zero in the creator"
 echo
-echo "If allocate falls back: … retrying top 2048 MB …"
-echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / cached / mirror)"
+echo "If still broken, send $DATA/lasrecomp.log"
