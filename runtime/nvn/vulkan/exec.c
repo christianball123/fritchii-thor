@@ -2543,6 +2543,11 @@ typedef struct { uint64_t base, max, ring; bool phys; } GWin;  // (ring: the cop
 static GWin gwin_ = {HEAP_BASE, HEAP_MAX, 0, false};
 #define GWIN_RING (64ull << 20)  // (= SNAP_RING, below)
 static atomic_bool gwin_done;
+#if defined(__linux__) && !defined(__ANDROID__)
+// Top of Z-A's phys window shared with Turnip via dma-buf (see turnip_window_* below).
+#define TW_CAP_MB 1536ull
+static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax);
+#endif
 static void gwin_pick(void) {
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lock);
@@ -2556,6 +2561,9 @@ static void gwin_pick(void) {
             plat_commit(fb, fs);  // (the host import needs every page committed)
             LOG("[vk] guest memory window forced: %llx +%llx\n", fb, fs);
             atomic_store(&gwin_done, true);
+#if defined(__linux__) && !defined(__ANDROID__)
+            turnip_window_prepare_early(gwin_.base, gwin_.max);
+#endif
         } else if (kernel_heap_size()) atomic_store(&gwin_done, true);
         else if (sz >= (64ull << 20)) {
             gwin_ = (GWin){a, sz < HEAP_MAX ? sz : HEAP_MAX, 0, true};
@@ -2569,6 +2577,10 @@ static void gwin_pick(void) {
             LOG("[vk] guest memory window: physical memory %llx +%llx (no heap)%s\n", (unsigned long long)a,
                 (unsigned long long)sz, gwin_.ring ? ", the storage copies' ring right after it" : "");
             atomic_store(&gwin_done, true);
+#if defined(__linux__) && !defined(__ANDROID__)
+            // Share the top of the window with Turnip before draws / boot races (not mid-frame).
+            turnip_window_prepare_early(gwin_.base, gwin_.max);
+#endif
         }
     }
     pthread_mutex_unlock(&lock);
@@ -4765,24 +4777,37 @@ static bool gmem_switch2_edition(void) {
 }
 static void gmem_window_init(void) {
     const char *w = ENV("LARECOMP_VK_GMEM_WINDOW");
-    bool small = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, s2 = false;
+    bool small = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, s2 = false, adreno = false;
 #ifdef __linux__
     small = small || g_vk.props.vendorID == 0x1002;
     // A discrete AMD GPU: the Switch 2 Edition's assets reach below the top 256 MB, so import 1 GB (the whole 3.2 GB
     // window costs too much on amdgpu: ~11 fps against 30 at 1 GB on the RX 9070 XT). An APU keeps 256 MB.
     if (small && g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && gmem_switch2_edition())
         small = false, s2 = true;
-    // Adreno / Mesa Turnip (0x5143): the 256 MB "integrated" window is a Steam Deck / amdgpu userptr cost cut.
-    // Turnip has no that revalidation tax. Leaving character XFB / clothing-screen skinning outside the window
-    // draws solid colour blocks on the creator (HUD fine) — import the whole guest window instead.
-    if (g_vk.props.vendorID == 0x5143 ||
-        (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip"))))
-        small = false, s2 = false;
+#if !defined(__ANDROID__)
+    // Adreno / Mesa Turnip: not amdgpu — but the full 3.2 GB window as host-visible dma-buf pieces OOMs Thor
+    // (~3 GB budget) and wedged boot. Import the top TW_CAP_MB (XFB/skinning live there); override with
+    // LARECOMP_VK_GMEM_WINDOW / LARECOMP_TURNIP_WINDOW_MB. (Android uses AHardwareBuffer.)
+    adreno = g_vk.props.vendorID == 0x5143 ||
+             (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip")));
+    if (adreno) small = false, s2 = false;
 #endif
-    gmem_window = w ? strtoull(w, NULL, 10) << 20 : s2 ? 1024ull << 20 : small ? 256ull << 20 : 0;
+#endif
+    if (w)
+        gmem_window = strtoull(w, NULL, 10) << 20;
+#if defined(__linux__) && !defined(__ANDROID__)
+    else if (adreno) {
+        const char *tm = ENV("LARECOMP_TURNIP_WINDOW_MB");
+        gmem_window = (tm ? strtoull(tm, NULL, 10) : TW_CAP_MB) << 20;
+        if (gmem_window < (64ull << 20)) gmem_window = 64ull << 20;
+    }
+#endif
+    else
+        gmem_window = s2 ? 1024ull << 20 : small ? 256ull << 20 : 0;
     if (!w)
         LOG("[vk] gmem window: %s\n",
             gmem_window == 0 ? "whole heap"
+            : adreno         ? "top of guest window (Adreno/Turnip dma-buf)"
             : s2             ? "1024 MB (Switch 2 Edition on discrete AMD)"
                              : "256 MB (integrated / AMD default)");
 }
@@ -5132,50 +5157,97 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 // Turnip / Adreno has no VK_EXT_external_memory_host (Android uses AHardwareBuffer instead). Without a shared guest
 // window, shader global memory and XFB skinning read zeros → character creator = solid colour blocks, HUD fine.
 // Mirror Android: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
+//
+// Thor crash lesson: mapping the full 3285 MB mid-frame blew the ~3 GB memory budget, stalled the render thread
+// for seconds, and the boot #271 ready-wait timed out → null deref at +0xd0. So we only share the *top* of the
+// window (where Z-A keeps XFB/skinning), set it up at gwin_pick (not during a draw), and restore anonymous pages
+// if setup fails part-way.
 #define TW_MAX 32
 #define TW_PIECE (128ull << 20)
+// TW_CAP_MB defined near gwin_pick (top 1.5 GB — under Thor's ~3 GB budget with headroom for swapchain/textures)
 static int tw_n;
 static VkDeviceMemory tw_mem[TW_MAX];
 static uint64_t tw_off[TW_MAX], tw_size[TW_MAX];
-static uint64_t tw_base, tw_span;
+static uint64_t tw_base, tw_span;  // absolute guest base + span actually mapped
 static bool tw_ready;
+static pthread_mutex_t tw_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool tw_is_adreno(void) {
     return g_vk.props.vendorID == 0x5143 ||
            (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip")));
 }
 
+static void tw_restore_anon(uint64_t base, uint64_t span) {
+    if (!span) return;
+    // Replace any dma-buf maps with fresh anonymous pages so the guest window stays usable after a failed setup.
+    void *p = mmap((void *)(uintptr_t)base, (size_t)span, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (p != (void *)(uintptr_t)base)
+        LOG("[vk] turnip window: restore anonymous map at %llx failed (%s)\n", (unsigned long long)base, strerror(errno));
+}
+
 static void tw_free(void) {
+    uint64_t b = tw_base, s = tw_span;
     for (int i = 0; i < tw_n; i++) {
         if (tw_mem[i]) vkFreeMemory(g_vk.dev, tw_mem[i], NULL);
         tw_mem[i] = VK_NULL_HANDLE;
     }
     tw_n = 0;
     tw_ready = false;
+    tw_base = tw_span = 0;
+    if (b && s) tw_restore_anon(b, s);
 }
 
-static bool turnip_window_make(uint64_t base, uint64_t span) {
+// Cap: top TW_CAP_MB of the phys window (override with LARECOMP_TURNIP_WINDOW_MB=<n>).
+static uint64_t tw_cap_bytes(uint64_t full) {
+    const char *e = ENV("LARECOMP_TURNIP_WINDOW_MB");
+    uint64_t cap = e ? strtoull(e, NULL, 10) << 20 : (TW_CAP_MB << 20);
+    if (cap < TW_PIECE) cap = TW_PIECE;
+    if (cap > full) cap = full;
+    return (cap + 0xFFFFFull) & ~0xFFFFFull;
+}
+
+static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     const char *e = ENV("LARECOMP_TURNIP_WINDOW");
     if (e && !atoi(e)) return false;
-    if (tw_ready && tw_base == base && tw_span >= span) return true;
-    if (tw_ready) tw_free();
-    if (!tw_is_adreno() || g_vk.host_import || !g_vk.dmabuf || !g_vk.dev) return false;
-    if (!span || span > (TW_MAX * TW_PIECE)) {
-        LOG("[vk] turnip window: span %llu MB won't fit in %d x %llu MB pieces\n", (unsigned long long)(span >> 20), TW_MAX,
-            (unsigned long long)(TW_PIECE >> 20));
-        return false;
+    if (!tw_is_adreno() || g_vk.host_import || !g_vk.dmabuf || !g_vk.dev || !gbase || !gmax) return false;
+
+    // Same top-anchored range as gmem_import (includes the storage-copies ring when present).
+    uint64_t lo = 0, len = gmax;
+    gmem_window_get(&lo, &len);
+    uint64_t cap = tw_cap_bytes(gmax);
+    if (len > cap) {
+        lo += len - cap;
+        lo &= ~0xFFFFFull;
+        len = gmax - lo;
     }
+    if (!len) return false;
+    uint64_t base = gbase + lo;
+    uint64_t span = len;
+
+    pthread_mutex_lock(&tw_lock);
+    if (tw_ready && tw_base == base && tw_span >= span) {
+        pthread_mutex_unlock(&tw_lock);
+        return true;
+    }
+    if (tw_ready) tw_free();
+
     VkPhysicalDeviceFeatures have;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
     if (!have.sparseBinding) {
         LOG("[vk] turnip window: no sparseBinding — cannot share Z-A's guest window without host import\n");
+        pthread_mutex_unlock(&tw_lock);
         return false;
     }
     PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
     if (!get_fd) {
         LOG("[vk] turnip window: no vkGetMemoryFdKHR\n");
+        pthread_mutex_unlock(&tw_lock);
         return false;
     }
+    LOG("[vk] turnip window: sharing top %llu MB of %llu MB guest window at %llx (LARECOMP_TURNIP_WINDOW_MB)\n",
+        (unsigned long long)(span >> 20), (unsigned long long)(gmax >> 20), (unsigned long long)base);
+
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
     const VkMemoryPropertyFlags prefs[] = {
@@ -5223,11 +5295,10 @@ static bool turnip_window_make(uint64_t base, uint64_t span) {
                                    .memoryTypeIndex = type};
         VkDeviceMemory mem = VK_NULL_HANDLE;
         if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) {
-            LOG("[vk] turnip window: allocate failed at +%llu MB (%llu bytes)\n", (unsigned long long)(off >> 20),
-                (unsigned long long)req.size);
+            LOG("[vk] turnip window: allocate failed at +%llu MB (%llu bytes) — lower LARECOMP_TURNIP_WINDOW_MB\n",
+                (unsigned long long)(off >> 20), (unsigned long long)req.size);
             goto fail;
         }
-        // Preserve any bytes already written into the anonymous guest mapping, then replace it with the dma-buf.
         void *keep = malloc((size_t)size);
         if (keep) memcpy(keep, (void *)(uintptr_t)(base + off), (size_t)size);
         VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
@@ -5256,16 +5327,36 @@ static bool turnip_window_make(uint64_t base, uint64_t span) {
         tw_off[tw_n] = off;
         tw_size[tw_n] = size;
         tw_n++;
+        // Track mapped range so fail can restore even mid-loop
+        tw_base = base;
+        tw_span = off + size;
     }
     tw_base = base;
     tw_span = span;
     tw_ready = true;
-    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU (no host import)\n", tw_n,
+    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU\n", tw_n,
         (unsigned long long)(span >> 20), (unsigned long long)base);
+    pthread_mutex_unlock(&tw_lock);
     return true;
 fail:
+    LOG("[vk] turnip window: setup failed — restoring anonymous guest pages (LARECOMP_TURNIP_WINDOW=0 to skip)\n");
     tw_free();
+    pthread_mutex_unlock(&tw_lock);
     return false;
+}
+
+static bool gmem_import(uint64_t lo, uint64_t size);
+
+// Call from gwin_pick once the phys window exists (before heavy rendering / boot races).
+static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax) {
+    if (!g_vk.dev || g_vk.host_import || !tw_is_adreno()) return;
+    if (!turnip_window_make(gbase, gmax)) return;
+    // Sparse-bind the gmem buffer now — doing this mid-draw stalled the render thread ~2s and
+    // tripped boot #271 (ready-wait → null at +0xd0) when the full 3.2 GB window was mapped.
+    if (gmem_buf) return;
+    uint64_t lo = 0, len = 0;
+    gmem_window_get(&lo, &len);
+    if (len) gmem_import(lo, len);
 }
 
 static VkResult turnip_window_buffer(uint64_t addr, uint64_t size, VkBuffer *out_buf, VkDeviceMemory *out_mem) {
@@ -5312,7 +5403,7 @@ static VkResult turnip_window_buffer(uint64_t addr, uint64_t size, VkBuffer *out
     }
     LOG("[vk] turnip window: sparse buffer %llu MB over %u pieces\n", (unsigned long long)(size >> 20), nb);
     *out_buf = buf;
-    *out_mem = VK_NULL_HANDLE;  // pieces own the memory
+    *out_mem = VK_NULL_HANDLE;
     return VK_SUCCESS;
 }
 #endif  // __linux__ && !__ANDROID__

@@ -1,10 +1,13 @@
 #!/bin/bash
-# Soften video settings + document the Adreno character-creator fix for AYN Thor / Armada.
+# Soften video settings + document the Adreno/Turnip guest-window fix for AYN Thor / Armada.
 #
-# Without rebuilding (try first — env overrides the 256 MB heap window):
-#   LARECOMP_VK_GMEM_WINDOW=0 ./build/linux/aarch64/za/lasrecomp
+# Rebuild required after git pull (dma-buf window is compiled into lasrecomp):
+#   tools/za/build-armada.sh
 #
-# After git pull + rebuild of lasrecomp, Adreno defaults to a whole-heap import.
+# Default: top 1536 MB of Z-A's guest window shared with Turnip (not the full 3.2 GB —
+# that OOM'd Thor and crashed boot #271). Override:
+#   LARECOMP_TURNIP_WINDOW_MB=1024 ./build/linux/aarch64/za/lasrecomp
+#   LARECOMP_TURNIP_WINDOW=0 …   # disable share (debug)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -40,7 +43,7 @@ patch_key aniso16 0
 patch_key show_fps 1
 patch_key gpu_xfb_mirror auto
 
-# Stale pipelines from the broken window can stick; safe to clear
+# Stale pipelines from a previous OOM/crash run can stick; safe to clear
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
   echo "fix-graphics-armada: cleared $DATA/cache (shader / pipeline cache)"
@@ -48,13 +51,14 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Rebuild is required for the Turnip dma-buf guest window (log had 'gmem … import off'):"
+echo "Rebuild is required for the capped Turnip dma-buf window:"
 echo "  tools/za/build-armada.sh"
 echo "  $B/lasrecomp"
 echo
 echo "Good log lines after rebuild:"
-echo "  [vk] turnip window: … dma-buf pieces … shared with the GPU"
-echo "  [vk] gmem: window … MB, import on (turnip dma-buf window)"
+echo "  [vk] turnip window: sharing top 1536 MB of …"
+echo "  [vk] turnip window: … dma-buf pieces (1536 MB) … shared with the GPU"
+echo "  [vk] gmem: … import on (turnip dma-buf window)"
 echo
-echo "If still broken, send the top of $DATA/lasrecomp.log"
-echo "  (gmem / turnip window / host memory import / xfb)"
+echo "If allocate fails: LARECOMP_TURNIP_WINDOW_MB=1024"
+echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip window / #271 / xfb)"

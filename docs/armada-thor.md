@@ -78,41 +78,47 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
 Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux).
 
-## Graphics (character creator = solid colour blocks)
+## Graphics (Turnip guest window)
 
-If the **UI is fine** but the character preview is a black/red slab, check the log:
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~1.5 GB** of Z-A’s guest phys window with the GPU via host-visible dma-buf pieces + a sparse buffer (XFB / character skinning live near the top). Mapping the full ~3.2 GB mid-frame blew Thor’s ~3 GB memory budget, stalled the render thread, then boot step #271 timed out (`signal 11 accessing 0xd0`).
 
-```
-[vk] gmem: window 3285 MB, import off
-[vk] host memory import …: no
-```
-
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. Without a shared guest window, character skinning (transform feedback) reads zeros.
+| Log symptom | Meaning |
+|-------------|---------|
+| `gmem … import off` + solid colour character | No shared window (old binary) |
+| `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
+| `turnip window: … ~1536 MB` + `import on` | Expected healthy path |
 
 ### Fix (needs rebuild)
 
 ```bash
 git pull
-tools/za/build-armada.sh   # rebuilds lasrecomp with turnip dma-buf window
+tools/za/build-armada.sh   # rebuilds lasrecomp with capped early turnip window
 tools/za/fix-graphics-armada.sh
 ./build/linux/aarch64/za/lasrecomp
 ```
 
-A good log after rebuild should show something like:
+Good log lines:
 
 ```
 [vk] host memory import …: no — Adreno/Turnip will use dma-buf …
-[vk] turnip window: N dma-buf pieces … shared with the GPU
-[vk] gmem: window … MB, import on (turnip dma-buf window)
+[vk] turnip window: sharing top 1536 MB of …
+[vk] turnip window: N dma-buf pieces (1536 MB) … shared with the GPU
+[vk] gmem: … import on (turnip dma-buf window)
 ```
 
-Optional: `LARECOMP_TURNIP_WINDOW=0` disables that path (debug).
+Env knobs:
+
+| Variable | Effect |
+|----------|--------|
+| `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (debug; character blocks again) |
+| `LARECOMP_TURNIP_WINDOW_MB=1024` | Smaller top window if allocate still fails |
+| `LARECOMP_VK_GMEM_WINDOW=<MB>` | Override gmem import size (keep ≤ ~1536 on Thor) |
 
 ### Gamescope HDR
 
 Armada Game Mode may force an HDR10 swapchain (`A2R10G10B10` / `HDR10_ST2084`). If colours look crushed after gmem is fixed, try launching outside Gamescope or with HDR disabled in the session.
 
-If it still fails, send the top of `~/.local/share/zarecomp/lasrecomp.log` (`gmem`, `turnip window`, `host memory import`, `xfb`).
+If it still fails, send `~/.local/share/zarecomp/lasrecomp.log` (`gmem`, `turnip window`, `host memory import`, `#271`, `xfb`).
 
 ## Fonts (“No font for the game's text”)
 
@@ -177,6 +183,7 @@ export LARECOMP_VK_D24=1
 - `tools/za/build-linux.sh` / `dist-linux.sh`: native **aarch64** (and existing x86_64)
 - `tools/za/build-armada.sh`: Thor/Armada wrapper
 - Vulkan (vendor `0x5143`): quad-control default, XFB mirror auto-off, D24 without blit-DST, pipeline-bind state invalidate, drop missing device features
+- Turnip dma-buf guest window (top ~1.5 GB, set up at gwin pick) when `VK_EXT_external_memory_host` is missing
 
 ## Reporting issues
 
