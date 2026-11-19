@@ -86,7 +86,8 @@ Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses 
 |-------------|---------|
 | `gmem … import off` + solid colour character | No shared window (old binary) |
 | `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
-| `turnip window: … ~1536 MB` + `import on` | Expected healthy path |
+| `turnip window: … 1536 MB` then `gmem import: -8` | Range mismatch (rebuild — ring must be included) |
+| `guest heap imported …` + `import on` + character visible | Expected healthy path |
 
 ### Fix (needs rebuild)
 

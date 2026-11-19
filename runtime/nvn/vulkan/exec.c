@@ -5212,14 +5212,17 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     if (e && !atoi(e)) return false;
     if (!tw_is_adreno() || g_vk.host_import || !g_vk.dmabuf || !g_vk.dev || !gbase || !gmax) return false;
 
-    // Same top-anchored range as gmem_import (includes the storage-copies ring when present).
+    // Exact same top-anchored range as gmem_import (includes the storage-copies ring when present).
+    // Do not shrink again here: capping below gmem_window_get left tw_span 64 MB short of the
+    // ring, sparse bind returned FEATURE_NOT_PRESENT (-8), and character/gmem stayed zeros.
     uint64_t lo = 0, len = gmax;
     gmem_window_get(&lo, &len);
-    uint64_t cap = tw_cap_bytes(gmax);
-    if (len > cap) {
-        lo += len - cap;
+    if (!len) return false;
+    uint64_t hard = tw_cap_bytes(gmax) + GWIN_RING;  // allow the ring past TW_CAP_MB
+    if (len > hard) {
+        lo += len - hard;
         lo &= ~0xFFFFFull;
-        len = gmax - lo;
+        len = gmax > lo ? gmax - lo : 0;
     }
     if (!len) return false;
     uint64_t base = gbase + lo;
@@ -5353,14 +5356,19 @@ static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax) {
     if (!turnip_window_make(gbase, gmax)) return;
     // Sparse-bind the gmem buffer now — doing this mid-draw stalled the render thread ~2s and
     // tripped boot #271 (ready-wait → null at +0xd0) when the full 3.2 GB window was mapped.
-    if (gmem_buf) return;
-    uint64_t lo = 0, len = 0;
-    gmem_window_get(&lo, &len);
-    if (len) gmem_import(lo, len);
+    // Import exactly the mapped turnip range (not a second gmem_window_get that can disagree).
+    if (gmem_buf || !tw_ready || !tw_span) return;
+    uint64_t lo = tw_base - gbase;
+    gmem_import(lo, tw_span);
 }
 
 static VkResult turnip_window_buffer(uint64_t addr, uint64_t size, VkBuffer *out_buf, VkDeviceMemory *out_mem) {
-    if (!tw_ready || addr < tw_base || addr + size > tw_base + tw_span) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!tw_ready || addr < tw_base || addr + size > tw_base + tw_span) {
+        LOG("[vk] turnip window: sparse range miss — want %llx+%llu MB, have %llx+%llu MB\n",
+            (unsigned long long)addr, (unsigned long long)(size >> 20),
+            (unsigned long long)tw_base, (unsigned long long)(tw_span >> 20));
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT,
                              .size = size,
@@ -5713,12 +5721,21 @@ static VkDescriptorBufferInfo gmem_info(void) {
     uint64_t wlo, wlen;
     gmem_window_get(&wlo, &wlen);
     if (!gmem_window) wlo = 0;
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Prefer the live turnip map so sparse bind cannot disagree with dma-buf pieces.
+    if (tw_ready && tw_span && gwin_base && tw_base >= gwin_base) {
+        wlo = tw_base - gwin_base;
+        wlen = tw_span;
+    }
+#endif
+    uint64_t import_sz = gmem_window ? wlen : (want > wlo ? want - wlo : 0);
     static int nlog;
     if (!nlog++)
-        LOG("[vk] gmem: window %llu MB, import %s%s\n", (unsigned long long)(want >> 20), off ? "off" : "on",
-            !g_vk.host_import && !off ? " (turnip dma-buf window)" : "");
-    if (!off && want > gmem_lo + gmem_size && !gmem_import(wlo, want - wlo)) {
-        LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
+        LOG("[vk] gmem: window %llu MB, import %s%s\n", (unsigned long long)(import_sz ? import_sz >> 20 : want >> 20),
+            off ? "off" : "on", !g_vk.host_import && !off ? " (turnip dma-buf window)" : "");
+    if (!off && import_sz > gmem_size && !gmem_import(wlo, import_sz)) {
+        LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n",
+            (unsigned long long)(import_sz >> 20));
         off = 1;
     }
     if (gmem_buf) return (VkDescriptorBufferInfo){gmem_buf, 0, gmem_size + (gmir_on ? GMIR_REPORT : 0)};
