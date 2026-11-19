@@ -2545,7 +2545,8 @@ static GWin gwin_ = {HEAP_BASE, HEAP_MAX, 0, false};
 static atomic_bool gwin_done;
 #if defined(__linux__) && !defined(__ANDROID__)
 // Top of Z-A's phys window shared with Turnip via dma-buf (see turnip_window_* below).
-#define TW_CAP_MB 2048ull  // top 2 GB — body/clothing assets reached below 1.5 GB on Thor
+// 0 = whole guest phys window (Android AHB path). Non-zero = top N MB if a full map OOMs.
+#define TW_CAP_MB 0ull
 static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax);
 #endif
 static void gwin_pick(void) {
@@ -4785,9 +4786,9 @@ static void gmem_window_init(void) {
     if (small && g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && gmem_switch2_edition())
         small = false, s2 = true;
 #if !defined(__ANDROID__)
-    // Adreno / Mesa Turnip: not amdgpu — but the full 3.2 GB window as host-visible dma-buf pieces OOMs Thor
-    // (~3 GB budget) and wedged boot. Import the top TW_CAP_MB (XFB/skinning live there); override with
-    // LARECOMP_VK_GMEM_WINDOW / LARECOMP_TURNIP_WINDOW_MB. (Android uses AHardwareBuffer.)
+    // Adreno / Mesa Turnip: match Android — share the whole Z-A phys window (AHardwareBuffer there). A mid-draw
+    // full map used to OOM Thor; we set it up at gwin_pick instead. LARECOMP_TURNIP_WINDOW_MB / LARECOMP_VK_GMEM_WINDOW
+    // can shrink it if allocate fails.
     adreno = g_vk.props.vendorID == 0x5143 ||
              (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip")));
     if (adreno) small = false, s2 = false;
@@ -4798,15 +4799,20 @@ static void gmem_window_init(void) {
 #if defined(__linux__) && !defined(__ANDROID__)
     else if (adreno) {
         const char *tm = ENV("LARECOMP_TURNIP_WINDOW_MB");
-        gmem_window = (tm ? strtoull(tm, NULL, 10) : TW_CAP_MB) << 20;
-        if (gmem_window < (64ull << 20)) gmem_window = 64ull << 20;
+        if (tm) {
+            gmem_window = strtoull(tm, NULL, 10) << 20;
+            if (gmem_window && gmem_window < (64ull << 20)) gmem_window = 64ull << 20;
+        } else if (TW_CAP_MB)
+            gmem_window = TW_CAP_MB << 20;
+        else
+            gmem_window = 0;  // whole guest window
     }
 #endif
     else
         gmem_window = s2 ? 1024ull << 20 : small ? 256ull << 20 : 0;
     if (!w)
         LOG("[vk] gmem window: %s\n",
-            gmem_window == 0 ? "whole heap"
+            gmem_window == 0 ? (adreno ? "whole guest window (Adreno/Turnip dma-buf)" : "whole heap")
             : adreno         ? "top of guest window (Adreno/Turnip dma-buf)"
             : s2             ? "1024 MB (Switch 2 Edition on discrete AMD)"
                              : "256 MB (integrated / AMD default)");
@@ -5158,17 +5164,17 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 // window, shader global memory and XFB skinning read zeros → character creator = solid colour blocks, HUD fine.
 // Mirror Android: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
 //
-// Thor crash lesson: mapping the full 3285 MB mid-frame blew the ~3 GB memory budget, stalled the render thread
-// for seconds, and the boot #271 ready-wait timed out → null deref at +0xd0. So we only share the *top* of the
-// window (where Z-A keeps XFB/skinning), set it up at gwin_pick (not during a draw), and restore anonymous pages
-// if setup fails part-way.
+// Match Android's AHardwareBuffer window: share the whole Z-A phys range (cached coherent dma-buf pieces), set
+// up at gwin_pick (a mid-draw full map once stalled boot #271). If the full map OOMs, retry the top 2048 MB.
 #define TW_MAX 32
 #define TW_PIECE (128ull << 20)
-// TW_CAP_MB defined near gwin_pick (top 1.5 GB — under Thor's ~3 GB budget with headroom for swapchain/textures)
+#define TW_FALLBACK_MB 2048ull
+// TW_CAP_MB near gwin_pick: 0 = whole window (Android); non-zero caps the top N MB.
 static int tw_n;
 static VkDeviceMemory tw_mem[TW_MAX];
 static uint64_t tw_off[TW_MAX], tw_size[TW_MAX];
 static uint64_t tw_base, tw_span;  // absolute guest base + span actually mapped
+static uint64_t tw_retry_cap;     // non-zero: force a smaller cap after a failed full map
 static bool tw_ready;
 static pthread_mutex_t tw_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -5198,10 +5204,18 @@ static void tw_free(void) {
     if (b && s) tw_restore_anon(b, s);
 }
 
-// Cap: top TW_CAP_MB of the phys window (override with LARECOMP_TURNIP_WINDOW_MB=<n>).
+// Cap: whole window by default (Android); LARECOMP_TURNIP_WINDOW_MB / TW_CAP_MB / tw_retry_cap shrink it.
 static uint64_t tw_cap_bytes(uint64_t full) {
     const char *e = ENV("LARECOMP_TURNIP_WINDOW_MB");
-    uint64_t cap = e ? strtoull(e, NULL, 10) << 20 : (TW_CAP_MB << 20);
+    uint64_t cap;
+    if (tw_retry_cap)
+        cap = tw_retry_cap;
+    else if (e)
+        cap = strtoull(e, NULL, 10) << 20;
+    else if (TW_CAP_MB)
+        cap = TW_CAP_MB << 20;
+    else
+        return full;
     if (cap < TW_PIECE) cap = TW_PIECE;
     if (cap > full) cap = full;
     return (cap + 0xFFFFFull) & ~0xFFFFFull;
@@ -5248,15 +5262,15 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
         pthread_mutex_unlock(&tw_lock);
         return false;
     }
-    LOG("[vk] turnip window: sharing top %llu MB of %llu MB guest window at %llx (LARECOMP_TURNIP_WINDOW_MB)\n",
-        (unsigned long long)(span >> 20), (unsigned long long)(gmax >> 20), (unsigned long long)base);
+    LOG("[vk] turnip window: sharing %s%llu MB of %llu MB guest window at %llx%s\n",
+        span >= gmax ? "whole " : "top ", (unsigned long long)(span >> 20), (unsigned long long)(gmax >> 20),
+        (unsigned long long)base, tw_retry_cap ? " (fallback after OOM)" : "");
 
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    // Prefer *uncached* host-visible. Matching VISIBLE|COHERENT alone previously still picked Turnip's
-    // type 0xf (…|HOST_CACHED): GPU vertex/storage reads of that left the character body as rainbow noise
-    // while the XFB mirror's device-local buffer kept the head intact. LARECOMP_TURNIP_CACHED=1: old order.
-    bool want_cached = ENV("LARECOMP_TURNIP_CACHED") && atoi(ENV("LARECOMP_TURNIP_CACHED"));
+    // Android Adreno: cached coherent first (type 0xf). "device-local only" made the GPU read stale lines →
+    // garbage blocks. LARECOMP_TURNIP_UNCACHED=1 prefers non-cached.
+    bool want_uncached = ENV("LARECOMP_TURNIP_UNCACHED") && atoi(ENV("LARECOMP_TURNIP_UNCACHED"));
     const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (uint64_t off = 0; off < span; off += TW_PIECE) {
         uint64_t size = span - off < TW_PIECE ? span - off : TW_PIECE;
@@ -5285,7 +5299,7 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
         vkDestroyBuffer(g_vk.dev, probe, NULL);
         uint32_t type = UINT32_MAX;
         for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++) {
-            bool cached_pass = want_cached ? (pass == 0) : (pass == 1);
+            bool cached_pass = want_uncached ? (pass == 1) : (pass == 0);
             for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
                 if (!(req.memoryTypeBits >> i & 1)) continue;
                 VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
@@ -5354,6 +5368,14 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
 fail:
     LOG("[vk] turnip window: setup failed — restoring anonymous guest pages (LARECOMP_TURNIP_WINDOW=0 to skip)\n");
     tw_free();
+    // Full window blew Thor's budget before: retry the top TW_FALLBACK_MB once (unless the user already capped it).
+    if (!tw_retry_cap && !ENV("LARECOMP_TURNIP_WINDOW_MB") && !TW_CAP_MB && span > (TW_FALLBACK_MB << 20)) {
+        tw_retry_cap = TW_FALLBACK_MB << 20;
+        pthread_mutex_unlock(&tw_lock);
+        LOG("[vk] turnip window: retrying top %llu MB after full-window allocate failure\n",
+            (unsigned long long)TW_FALLBACK_MB);
+        return turnip_window_make(gbase, gmax);
+    }
     pthread_mutex_unlock(&tw_lock);
     return false;
 }
@@ -6388,19 +6410,17 @@ static bool xm_on(void) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
         // Auto-off on AMD: the mirror ends the render pass ~110 times a frame.
-        // Android Adreno: off (AHB — XFB writes the shared heap in place; tiler store/reload tax).
-        // Linux Adreno/Turnip: Auto = ON. dma-buf gmem alone (mirror off) collapsed the character creator to a
-        // solid hair-colour block on Thor; mirror on shows a correct head (body still noisy — needs the wider
-        // window). LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to force off.
-        bool auto_off = g_vk.props.vendorID == 0x1002;
-#ifdef __ANDROID__
-        auto_off = auto_off || g_vk.props.vendorID == 0x5143;
-#endif
+        // Adreno (Android AHB and Linux Turnip dma-buf): off — XFB writes the shared heap in place. A partial
+        // window with mirror off used to collapse the creator to a solid block; with the whole window shared
+        // (Android's layout) mirror stays off. LARECOMP_VK_XFB_MIRROR=1 / F1 Compatibility to force on.
+        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
+                           cs == GPU_OFF ? "F1 > Compatibility"
+                           : g_vk.props.vendorID == 0x5143 ? "Adreno/Turnip shared window"
+                                                           : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Adreno/Turnip Linux; LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to turn off)\n");
+            LOG("[vk] transform feedback mirror on (forced via F1 > Compatibility; LARECOMP_VK_XFB_MIRROR=0 for Android-like off)\n");
     }
 #if defined(__linux__) && !defined(__ANDROID__)
     return on && (g_vk.host_import || tw_ready);
@@ -6984,12 +7004,11 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: binding the dma-buf gmem window directly as a vertex/index buffer left the creator body as
-    // rainbow noise (head OK — those streams came from the device-local XFB mirror). Copy to a transient
-    // device-local buffer instead. LARECOMP_TURNIP_GMEM_VB=1 restores direct binds.
+    // Android binds the AHB sparse buffer as VB/IB directly. Do the same for the Turnip dma-buf window.
+    // LARECOMP_TURNIP_GMEM_VB=0 forces the copy path (debug).
     if (tw_ready && tw_is_adreno()) {
         const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-        if (!e || !atoi(e)) return false;
+        if (e && !atoi(e)) return false;
     }
 #endif
     stat_vtx_host += size;

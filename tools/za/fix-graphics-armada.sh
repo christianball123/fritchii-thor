@@ -4,9 +4,9 @@
 # Rebuild required after git pull (dma-buf window is compiled into lasrecomp):
 #   tools/za/build-armada.sh
 #
-# Default: top 1536 MB of Z-A's guest window shared with Turnip (not the full 3.2 GB —
-# that OOM'd Thor and crashed boot #271). Override:
-#   LARECOMP_TURNIP_WINDOW_MB=1024 ./build/linux/aarch64/za/lasrecomp
+# Default: whole Z-A guest phys window shared with Turnip (Android AHB layout), set up at
+# gwin_pick. If allocate OOMs, the binary retries the top 2048 MB. Override:
+#   LARECOMP_TURNIP_WINDOW_MB=2048 ./build/linux/aarch64/za/lasrecomp
 #   LARECOMP_TURNIP_WINDOW=0 …   # disable share (debug)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,7 +41,8 @@ patch_key fps60 0
 patch_key fps60_lock 0
 patch_key aniso16 0
 patch_key show_fps 1
-patch_key gpu_xfb_mirror on
+# Android-like: XFB writes the shared window in place (was forced on while the window was partial).
+patch_key gpu_xfb_mirror auto
 
 # Stale pipelines from a previous bad run can stick; safe to clear
 if [ -d "$DATA/cache" ]; then
@@ -51,16 +52,17 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Thor: dma-buf window + XFB mirror ON + uncached pieces + copy VBs"
+echo "Thor: full dma-buf window + cached pieces + XFB mirror Auto (off on Adreno) + direct gmem VBs"
 echo
 echo "Rebuild (required for body fix):"
 echo "  tools/za/build-armada.sh"
 echo "  $B/lasrecomp"
 echo
 echo "Good log lines:"
-echo "  [vk] turnip window: memory type … (uncached)"
-echo "  [vk] guest heap imported …"
-echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
+echo "  [vk] gmem window: whole guest window (Adreno/Turnip dma-buf)"
+echo "  [vk] turnip window: memory type … (cached)"
+echo "  [vk] turnip window: sharing whole … MB …"
+echo "  [vk] transform feedback mirror off (Adreno/Turnip shared window)"
 echo
-echo "If allocate fails: LARECOMP_TURNIP_WINDOW_MB=1536"
-echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / uncached / mirror)"
+echo "If allocate falls back: … retrying top 2048 MB …"
+echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / cached / mirror)"

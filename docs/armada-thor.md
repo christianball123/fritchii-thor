@@ -80,23 +80,23 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~2 GB** of Z-A’s guest phys window with the GPU via host-visible dma-buf pieces + a sparse buffer. Mapping the full ~3.2 GB mid-frame blew Thor’s ~3 GB memory budget, stalled the render thread, then boot step #271 timed out (`signal 11 accessing 0xd0`).
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork mirrors that layout: share the **whole** Z-A guest phys window via host-visible **cached coherent** dma-buf pieces + one sparse buffer, set up at `gwin_pick` (a mid-draw full map once blew Thor’s budget and tripped boot #271). XFB mirror Auto is **off** on Adreno (writes go straight into the shared window). If the full map OOMs, the binary retries the top 2048 MB.
 
 | Log symptom | Meaning |
 |-------------|---------|
 | `gmem … import off` + solid colour character | No shared window (old binary) |
-| `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
+| `turnip window: … 3285 MB` mid-draw then black / crash #271 | Old binary — rebuild (early full map) |
 | `gmem import: -8` after pieces shared | Range mismatch (rebuild) |
-| Solid hair-colour block + `transform feedback mirror off` | Mirror required on Linux Turnip — set `LARECOMP_VK_XFB_MIRROR=1` |
-| Head OK, body = rainbow noise + mirror on | Was binding cached dma-buf as VB — rebuild (uncached + copy VBs) |
-| `guest heap imported` + `transform feedback mirror on` + `(uncached)` + full character | Target healthy path |
+| Solid hair-colour block + partial window + mirror off | Need whole-window share (or force `LARECOMP_VK_XFB_MIRROR=1` as a stopgap) |
+| Head OK / body missing + `(uncached)` + top 2 GB only | Old path — rebuild (cached + whole window) |
+| `sharing whole …` + `(cached)` + `mirror off` + full character | Target healthy path |
 
 ### Fix (needs rebuild)
 
 ```bash
 git pull
-tools/za/build-armada.sh   # rebuilds lasrecomp with capped early turnip window
-tools/za/fix-graphics-armada.sh
+tools/za/build-armada.sh   # rebuilds lasrecomp with early full turnip window
+tools/za/fix-graphics-armada.sh   # sets gpu_xfb_mirror=auto (clears a prior forced-on)
 ./build/linux/aarch64/za/lasrecomp
 ```
 
@@ -104,20 +104,22 @@ Good log lines:
 
 ```
 [vk] host memory import …: no — Adreno/Turnip will use dma-buf …
-[vk] turnip window: sharing top … MB …
+[vk] gmem window: whole guest window (Adreno/Turnip dma-buf)
+[vk] turnip window: sharing whole … MB …
+[vk] turnip window: memory type … (cached)
 [vk] guest heap imported for shader global memory: …
-[vk] transform feedback mirror on (Adreno/Turnip Linux …)
+[vk] transform feedback mirror off (Adreno/Turnip shared window)
 ```
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=1` | On (needed on Linux Turnip; off → solid colour block) |
-| `LARECOMP_TURNIP_CACHED=1` | Allow HOST_CACHED dma-buf (debug; body noise) |
-| `LARECOMP_TURNIP_GMEM_VB=1` | Bind dma-buf directly as VB (debug; body noise) |
+| `LARECOMP_VK_XFB_MIRROR=1` | Force mirror on (stopgap if window is partial) |
+| `LARECOMP_TURNIP_UNCACHED=1` | Prefer non-cached dma-buf (debug) |
+| `LARECOMP_TURNIP_GMEM_VB=0` | Force copy path instead of binding gmem as VB (debug) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (debug; character blocks again) |
-| `LARECOMP_TURNIP_WINDOW_MB=1536` | Smaller top window if allocate fails |
+| `LARECOMP_TURNIP_WINDOW_MB=2048` | Cap to top N MB (also the automatic OOM fallback) |
 
 ### Gamescope HDR
 
