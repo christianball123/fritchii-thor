@@ -50,10 +50,34 @@ bool EnvIsOff(const char* name) {
                  std::strcmp(v, "false") == 0);
 }
 
+std::string ResolveArmadaBottomEnvPath() {
+    if (const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
+        override_path && *override_path) {
+        return override_path;
+    }
+    if (const char* runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime) {
+        std::string p = std::string(runtime) + "/armada-bottom-env";
+        if (access(p.c_str(), R_OK) == 0) {
+            return p;
+        }
+    }
+    {
+        std::string p = "/run/user/" + std::to_string(getuid()) + "/armada-bottom-env";
+        if (access(p.c_str(), R_OK) == 0) {
+            return p;
+        }
+    }
+    if (access(kArmadaBottomEnv, R_OK) == 0) {
+        return kArmadaBottomEnv;
+    }
+    return {};
+}
+
 bool LoadArmadaBottomEnv() {
-    const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
-    const char* path =
-        (override_path && *override_path) ? override_path : kArmadaBottomEnv;
+    const std::string path = ResolveArmadaBottomEnvPath();
+    if (path.empty()) {
+        return false;
+    }
     std::ifstream in(path);
     if (!in) {
         return false;
@@ -453,15 +477,16 @@ int MaybeStartThorBottomHelper(const std::string& shared_companion_path) {
             close(logfd);
         }
         if (use_armada) {
-            execl(kArmadaRunBottom, kArmadaRunBottom, self.c_str(), kHelperFlag,
+            // armada-run-bottom requires: armada-run-bottom -- <command> [args...]
+            execl(kArmadaRunBottom, kArmadaRunBottom, "--", self.c_str(), kHelperFlag,
                   shared_companion_path.c_str(), static_cast<char*>(nullptr));
         }
         execl(self.c_str(), self.c_str(), kHelperFlag, shared_companion_path.c_str(),
               static_cast<char*>(nullptr));
         _exit(127);
     }
-    LOG_INFO(Frontend, "helper: {} {} {}", use_armada ? kArmadaRunBottom : self.c_str(),
-             kHelperFlag, shared_companion_path);
+    LOG_INFO(Frontend, "helper: {} -- {} {} {}", use_armada ? kArmadaRunBottom : "(direct)",
+             self.c_str(), kHelperFlag, shared_companion_path);
     return static_cast<int>(pid);
 }
 

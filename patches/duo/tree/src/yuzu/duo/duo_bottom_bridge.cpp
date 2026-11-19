@@ -57,16 +57,23 @@ std::string MakeSharedPath() {
     return std::string(runtime) + "/eden-duo-bottom-" + std::to_string(getpid());
 }
 
-// Prefer /armada-bottom-env; also accept $XDG_RUNTIME_DIR/armada-bottom-env.
+// ArmadaOS writes: $XDG_RUNTIME_DIR/armada-bottom-env (see armada-run-bottom).
+// Older notes also mention /armada-bottom-env at root — still accept that.
 std::string FindArmadaBottomEnv() {
-    if (access(kArmadaBottomEnv, R_OK) == 0) {
-        return kArmadaBottomEnv;
-    }
     if (const char* runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime) {
         std::string alt = std::string(runtime) + "/armada-bottom-env";
         if (access(alt.c_str(), R_OK) == 0) {
             return alt;
         }
+    }
+    {
+        std::string alt = "/run/user/" + std::to_string(getuid()) + "/armada-bottom-env";
+        if (access(alt.c_str(), R_OK) == 0) {
+            return alt;
+        }
+    }
+    if (access(kArmadaBottomEnv, R_OK) == 0) {
+        return kArmadaBottomEnv;
     }
     return {};
 }
