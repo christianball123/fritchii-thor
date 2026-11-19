@@ -1,34 +1,34 @@
-diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
-index 197094767..6320f0c34 100644
 --- a/src/yuzu/main_window.cpp
 +++ b/src/yuzu/main_window.cpp
 @@ -26,6 +26,7 @@
  #include "common/fs/ryujinx_compat.h"
  #include "main_window.h"
  #include "yuzu/duo/duo_companion_menus.h"
-+#include "yuzu/duo/duo_aux_window.h"
++#include "yuzu/duo/duo_bottom_bridge.h"
  #include "network/network.h"
  #include "qt_common/discord/discord.h"
  #include "ui_main.h"
-@@ -2498,6 +2499,13 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
+@@ -2498,6 +2499,15 @@
      // Create and start the emulation thread
      QtCommon::emu_thread = std::make_unique<EmuThread>();
      emit EmulationStarting();
-+    DuoQt::AttachThorAuxWindow(*QtCommon::system);
-+    static QTimer* duo_aux_timer = nullptr;
-+    if (!duo_aux_timer) {
-+        duo_aux_timer = new QTimer(qApp);
-+        QObject::connect(duo_aux_timer, &QTimer::timeout, [] { DuoQt::PumpThorAuxEvents(); });
-+        duo_aux_timer->start(8);
++    // Thor Game Mode: shared-buffer helper claims bottom Xwayland over ArmadaLive.
++    DuoQt::StartThorBottomBridge(*QtCommon::system);
++    static QTimer* duo_bottom_timer = nullptr;
++    if (!duo_bottom_timer) {
++        duo_bottom_timer = new QTimer(qApp);
++        QObject::connect(duo_bottom_timer, &QTimer::timeout,
++                         [] { DuoQt::PumpThorBottomBridge(*QtCommon::system); });
++        duo_bottom_timer->start(8);
 +    }
      QtCommon::emu_thread->start();
  
      // Register an ExecuteProgram callback such that Core can execute a sub-program
-@@ -2666,6 +2674,7 @@ bool MainWindow::OnShutdownBegin() {
+@@ -2666,6 +2676,7 @@
      QtCommon::emu_thread->SetRunning(true);
  
      connect(QtCommon::emu_thread.get(), &QThread::finished, this, &MainWindow::OnEmulationStopped);
-+    DuoQt::DetachThorAuxWindow(*QtCommon::system);
++    DuoQt::StopThorBottomBridge();
      emit EmulationStopping();
  
      int shutdown_time = 1000;

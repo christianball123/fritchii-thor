@@ -91,3 +91,5 @@ against fritchii-v6.1.
 - Hook 0024: Fritchii RestructureMenus keeps Install/Remove Duo Companion.
 - Hook 0025 + duo_aux_window: Thor bottom SetAuxWindow via SDL on /armada-bottom-env DISPLAY.
 - Packaging: usr/bin + APPDIR/bin share compatibility links for duo-companion.
+
+- Real --duo-bottom-helper: SDL present + X11 raise/claim over ArmadaLive; shared /eden-duo-bottom-* buffer via duo_bottom_bridge (Claude AppImage path).
