@@ -397,7 +397,8 @@ int RunBottomHelperMain(const char* shared_path) {
                     if (texture) {
                         SDL_DestroyTexture(texture);
                     }
-                    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                    // TakeUi / Vulkan upload as B8G8R8A8 (R↔B swapped vs straight RGBA).
+                    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_BGRA32,
                                                 SDL_TEXTUREACCESS_STREAMING, static_cast<int>(w),
                                                 static_cast<int>(h));
                     tex_w = w;

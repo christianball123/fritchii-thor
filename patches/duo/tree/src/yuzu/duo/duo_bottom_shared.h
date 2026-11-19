@@ -33,7 +33,7 @@ inline constexpr std::size_t kDuoBottomMapBytes =
 //   0x68 u64 seq                (parent → helper frame)
 //   0x70 u32 width
 //   0x74 u32 height
-//   0x7c … RGBA8 pixels (stride = width*4)
+//   0x7c … B8G8R8A8 pixels (stride = width*4; same as Vulkan aux upload / TakeUi)
 
 inline constexpr std::size_t kDuoBottomTouchSeqOff = 0x28;
 inline constexpr std::size_t kDuoBottomTouchCountOff = 0x2c;
