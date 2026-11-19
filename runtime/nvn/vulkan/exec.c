@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #ifdef __linux__
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
@@ -5126,6 +5127,196 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 
 // Guest window bytes [lo, lo + size) for shader global memory (gmem_info; the window: gwin - the heap, or Pokémon Z-A's
 // physical memory)
+
+#if defined(__linux__) && !defined(__ANDROID__)
+// Turnip / Adreno has no VK_EXT_external_memory_host (Android uses AHardwareBuffer instead). Without a shared guest
+// window, shader global memory and XFB skinning read zeros → character creator = solid colour blocks, HUD fine.
+// Mirror Android: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
+#define TW_MAX 32
+#define TW_PIECE (128ull << 20)
+static int tw_n;
+static VkDeviceMemory tw_mem[TW_MAX];
+static uint64_t tw_off[TW_MAX], tw_size[TW_MAX];
+static uint64_t tw_base, tw_span;
+static bool tw_ready;
+
+static bool tw_is_adreno(void) {
+    return g_vk.props.vendorID == 0x5143 ||
+           (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip")));
+}
+
+static void tw_free(void) {
+    for (int i = 0; i < tw_n; i++) {
+        if (tw_mem[i]) vkFreeMemory(g_vk.dev, tw_mem[i], NULL);
+        tw_mem[i] = VK_NULL_HANDLE;
+    }
+    tw_n = 0;
+    tw_ready = false;
+}
+
+static bool turnip_window_make(uint64_t base, uint64_t span) {
+    const char *e = ENV("LARECOMP_TURNIP_WINDOW");
+    if (e && !atoi(e)) return false;
+    if (tw_ready && tw_base == base && tw_span >= span) return true;
+    if (tw_ready) tw_free();
+    if (!tw_is_adreno() || g_vk.host_import || !g_vk.dmabuf || !g_vk.dev) return false;
+    if (!span || span > (TW_MAX * TW_PIECE)) {
+        LOG("[vk] turnip window: span %llu MB won't fit in %d x %llu MB pieces\n", (unsigned long long)(span >> 20), TW_MAX,
+            (unsigned long long)(TW_PIECE >> 20));
+        return false;
+    }
+    VkPhysicalDeviceFeatures have;
+    vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
+    if (!have.sparseBinding) {
+        LOG("[vk] turnip window: no sparseBinding — cannot share Z-A's guest window without host import\n");
+        return false;
+    }
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
+    if (!get_fd) {
+        LOG("[vk] turnip window: no vkGetMemoryFdKHR\n");
+        return false;
+    }
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    const VkMemoryPropertyFlags prefs[] = {
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+    };
+    for (uint64_t off = 0; off < span; off += TW_PIECE) {
+        uint64_t size = span - off < TW_PIECE ? span - off : TW_PIECE;
+        size = (size + 0xFFFFull) & ~0xFFFFull;
+        if (!size) break;
+        if (tw_n >= TW_MAX) {
+            LOG("[vk] turnip window: too many pieces\n");
+            goto fail;
+        }
+        VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                               .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .pNext = &eb,
+                                 .size = size,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+        VkBuffer probe;
+        if (vkCreateBuffer(g_vk.dev, &bi, NULL, &probe) != VK_SUCCESS) {
+            LOG("[vk] turnip window: buffer create failed at +%llu MB\n", (unsigned long long)(off >> 20));
+            goto fail;
+        }
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(g_vk.dev, probe, &req);
+        vkDestroyBuffer(g_vk.dev, probe, NULL);
+        uint32_t type = UINT32_MAX;
+        for (int k = 0; k < 2 && type == UINT32_MAX; k++)
+            for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++)
+                if ((req.memoryTypeBits >> i & 1) && (mp.memoryTypes[i].propertyFlags & prefs[k]) == prefs[k]) type = i;
+        if (type == UINT32_MAX) type = (uint32_t)__builtin_ctz(req.memoryTypeBits);
+        if (off == 0)
+            LOG("[vk] turnip window: memory type %u flags %#x (piece %llu MB)\n", type, mp.memoryTypes[type].propertyFlags,
+                (unsigned long long)(size >> 20));
+        VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                   .pNext = &ex,
+                                   .allocationSize = req.size,
+                                   .memoryTypeIndex = type};
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) {
+            LOG("[vk] turnip window: allocate failed at +%llu MB (%llu bytes)\n", (unsigned long long)(off >> 20),
+                (unsigned long long)req.size);
+            goto fail;
+        }
+        // Preserve any bytes already written into the anonymous guest mapping, then replace it with the dma-buf.
+        void *keep = malloc((size_t)size);
+        if (keep) memcpy(keep, (void *)(uintptr_t)(base + off), (size_t)size);
+        VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                   .memory = mem,
+                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        int fd = -1;
+        if (get_fd(g_vk.dev, &fi, &fd) != VK_SUCCESS || fd < 0) {
+            LOG("[vk] turnip window: no dma-buf fd at +%llu MB\n", (unsigned long long)(off >> 20));
+            free(keep);
+            vkFreeMemory(g_vk.dev, mem, NULL);
+            goto fail;
+        }
+        void *at = mmap((void *)(uintptr_t)(base + off), (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+        close(fd);
+        if (at != (void *)(uintptr_t)(base + off)) {
+            LOG("[vk] turnip window: mmap MAP_FIXED failed at %llx (%s)\n", (unsigned long long)(base + off), strerror(errno));
+            free(keep);
+            vkFreeMemory(g_vk.dev, mem, NULL);
+            goto fail;
+        }
+        if (keep) {
+            memcpy(at, keep, (size_t)size);
+            free(keep);
+        }
+        tw_mem[tw_n] = mem;
+        tw_off[tw_n] = off;
+        tw_size[tw_n] = size;
+        tw_n++;
+    }
+    tw_base = base;
+    tw_span = span;
+    tw_ready = true;
+    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU (no host import)\n", tw_n,
+        (unsigned long long)(span >> 20), (unsigned long long)base);
+    return true;
+fail:
+    tw_free();
+    return false;
+}
+
+static VkResult turnip_window_buffer(uint64_t addr, uint64_t size, VkBuffer *out_buf, VkDeviceMemory *out_mem) {
+    if (!tw_ready || addr < tw_base || addr + size > tw_base + tw_span) return VK_ERROR_FEATURE_NOT_PRESENT;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT,
+                             .size = size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+    VkBuffer buf;
+    VkResult r = vkCreateBuffer(g_vk.dev, &bi, NULL, &buf);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] turnip window: sparse buffer refused (%d)\n", r);
+        return r;
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    VkSparseMemoryBind binds[TW_MAX];
+    uint32_t nb = 0;
+    for (int i = 0; i < tw_n; i++) {
+        uint64_t ps = tw_base + tw_off[i], pe = ps + tw_size[i];
+        uint64_t lo = addr > ps ? addr : ps, hi = addr + size < pe ? addr + size : pe;
+        if (hi <= lo) continue;
+        uint64_t o = lo - addr, n = hi - lo;
+        if (o + n > req.size) n = req.size - o;
+        if (!n) continue;
+        binds[nb++] = (VkSparseMemoryBind){.resourceOffset = o, .size = n, .memory = tw_mem[i], .memoryOffset = lo - ps};
+    }
+    VkSparseBufferMemoryBindInfo bb = {.buffer = buf, .bindCount = nb, .pBinds = binds};
+    VkBindSparseInfo si = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 1, .pBufferBinds = &bb};
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    vkCreateFence(g_vk.dev, &fi, NULL, &fence);
+    vkQueueWaitIdle(g_vk.queue);
+    r = vkQueueBindSparse(g_vk.queue, 1, &si, fence);
+    if (r == VK_SUCCESS) r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 5000000000ull);
+    vkDestroyFence(g_vk.dev, fence, NULL);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] turnip window: sparse binding failed (%d)\n", r);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        return r;
+    }
+    LOG("[vk] turnip window: sparse buffer %llu MB over %u pieces\n", (unsigned long long)(size >> 20), nb);
+    *out_buf = buf;
+    *out_mem = VK_NULL_HANDLE;  // pieces own the memory
+    return VK_SUCCESS;
+}
+#endif  // __linux__ && !__ANDROID__
+
 static bool gmem_import(uint64_t lo, uint64_t size) {
     VkBuffer buf;
     VkDeviceMemory mem;
@@ -5141,9 +5332,16 @@ static bool gmem_import(uint64_t lo, uint64_t size) {
             (unsigned long long)((SDL_GetTicksNS() - t0) / 1000000));
     }
 #endif
-    VkResult r = host_import_ptr((void *)(uintptr_t)(gwin_base + lo), size, &buf, &mem, g_vk.gmem_addr);
+    VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
+    if (g_vk.host_import)
+        r = host_import_ptr((void *)(uintptr_t)(gwin_base + lo), size, &buf, &mem, g_vk.gmem_addr);
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (r != VK_SUCCESS && turnip_window_make(gwin_base, gwin_max))
+        r = turnip_window_buffer(gwin_base + lo, size, &buf, &mem);
+#endif
     if (r != VK_SUCCESS) {
-        LOG("[vk] gmem import: %d (%llu MB)\n", r, (unsigned long long)(size >> 20));
+        LOG("[vk] gmem import: %d (%llu MB)%s\n", r, (unsigned long long)(size >> 20),
+            !g_vk.host_import ? " (no VK_EXT_external_memory_host)" : "");
         // (#157: a driver refuses an import over pages that aren't committed - the first one found, in 1 MB steps;
         // once, at a failure only: VirtualQuery is slow over the window)
         char st[160];
@@ -5410,14 +5608,24 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 
 static VkDescriptorBufferInfo gmem_info(void) {
     static int off = -1;
-    if (off < 0) off = ENV("LARECOMP_VK_NO_GMEM") != NULL || !g_vk.host_import || gc_lazy;  // (lazy: chunks instead)
+    if (off < 0) {
+        // host_import OR (Adreno/Turnip dma-buf window). Previously !host_import forced import off forever, so
+        // Turnip never tried — character XFB/skinning read zeros (solid blocks on the creator).
+        bool can_import = g_vk.host_import;
+#if defined(__linux__) && !defined(__ANDROID__)
+        can_import = can_import || (g_vk.dmabuf && tw_is_adreno());
+#endif
+        off = ENV("LARECOMP_VK_NO_GMEM") != NULL || !can_import || gc_lazy;  // (lazy: chunks instead)
+    }
     uint64_t want = (gwin_want() + 0xFFFF) & ~0xFFFFull;
     if (want > gwin_max) want = gwin_max;
     uint64_t wlo, wlen;
     gmem_window_get(&wlo, &wlen);
     if (!gmem_window) wlo = 0;
     static int nlog;
-    if (!nlog++) LOG("[vk] gmem: window %llu MB, import %s\n", (unsigned long long)(want >> 20), off ? "off" : "on");
+    if (!nlog++)
+        LOG("[vk] gmem: window %llu MB, import %s%s\n", (unsigned long long)(want >> 20), off ? "off" : "on",
+            !g_vk.host_import && !off ? " (turnip dma-buf window)" : "");
     if (!off && want > gmem_lo + gmem_size && !gmem_import(wlo, want - wlo)) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
@@ -6075,7 +6283,11 @@ static bool xm_on(void) {
         else if (on && !e && g_vk.props.vendorID == 0x5143)
             LOG("[vk] transform feedback mirror on (Adreno/Turnip Linux; LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to turn off)\n");
     }
+#if defined(__linux__) && !defined(__ANDROID__)
+    return on && (g_vk.host_import || tw_ready);
+#else
     return on && g_vk.host_import;
+#endif
 }
 
 static bool xm_inside(uint64_t a, uint64_t n) { return xm_lo && a >= xm_lo && a + n <= xm_lo + XM_SIZE; }

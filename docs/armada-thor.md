@@ -80,22 +80,39 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (character creator = solid colour blocks)
 
-If the **UI is fine** but the character preview is a black/red slab (noise along the bottom), the guest-heap GPU import was too small for Adreno — skinning / transform-feedback data sat outside the window and read as zero.
+If the **UI is fine** but the character preview is a black/red slab, check the log:
 
-### Try immediately (no rebuild)
-
-```bash
-tools/za/fix-graphics-armada.sh
-LARECOMP_VK_GMEM_WINDOW=0 ./build/linux/aarch64/za/lasrecomp
+```
+[vk] gmem: window 3285 MB, import off
+[vk] host memory import …: no
 ```
 
-`LARECOMP_VK_GMEM_WINDOW=0` forces a whole-heap import. The script also sets handheld / bilinear / 1× / 30 fps and clears the shader cache.
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. Without a shared guest window, character skinning (transform feedback) reads zeros.
 
-### After rebuild
+### Fix (needs rebuild)
 
-`git pull` then `tools/za/build-armada.sh` (or rebuild `lasrecomp`). Adreno/Turnip then defaults to a whole-heap import and Linux keeps the XFB mirror on (Android still turns it off — it has AHardwareBuffer).
+```bash
+git pull
+tools/za/build-armada.sh   # rebuilds lasrecomp with turnip dma-buf window
+tools/za/fix-graphics-armada.sh
+./build/linux/aarch64/za/lasrecomp
+```
 
-If it still fails, send the top of `~/.local/share/zarecomp/lasrecomp.log` (lines with `gmem`, `host import`, `xfb mirror`, `using`).
+A good log after rebuild should show something like:
+
+```
+[vk] host memory import …: no — Adreno/Turnip will use dma-buf …
+[vk] turnip window: N dma-buf pieces … shared with the GPU
+[vk] gmem: window … MB, import on (turnip dma-buf window)
+```
+
+Optional: `LARECOMP_TURNIP_WINDOW=0` disables that path (debug).
+
+### Gamescope HDR
+
+Armada Game Mode may force an HDR10 swapchain (`A2R10G10B10` / `HDR10_ST2084`). If colours look crushed after gmem is fixed, try launching outside Gamescope or with HDR disabled in the session.
+
+If it still fails, send the top of `~/.local/share/zarecomp/lasrecomp.log` (`gmem`, `turnip window`, `host memory import`, `xfb`).
 
 ## Fonts (“No font for the game's text”)
 

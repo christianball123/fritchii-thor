@@ -48,13 +48,13 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Try without rebuilding first:"
-echo "  LARECOMP_VK_GMEM_WINDOW=0 $B/lasrecomp"
-echo
-echo "Then rebuild so the Adreno whole-heap default is compiled in:"
+echo "Rebuild is required for the Turnip dma-buf guest window (log had 'gmem … import off'):"
 echo "  tools/za/build-armada.sh"
-echo "  # (or at least rebuild lasrecomp after git pull)"
+echo "  $B/lasrecomp"
 echo
-echo "If the character is still solid blocks, grab the top of:"
-echo "  $DATA/lasrecomp.log"
-echo "  (look for lines: [vk] using …, gmem window, host import, xfb mirror, depth24)"
+echo "Good log lines after rebuild:"
+echo "  [vk] turnip window: … dma-buf pieces … shared with the GPU"
+echo "  [vk] gmem: window … MB, import on (turnip dma-buf window)"
+echo
+echo "If still broken, send the top of $DATA/lasrecomp.log"
+echo "  (gmem / turnip window / host memory import / xfb)"
