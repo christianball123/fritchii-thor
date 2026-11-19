@@ -4771,8 +4771,19 @@ static void gmem_window_init(void) {
     // window costs too much on amdgpu: ~11 fps against 30 at 1 GB on the RX 9070 XT). An APU keeps 256 MB.
     if (small && g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && gmem_switch2_edition())
         small = false, s2 = true;
+    // Adreno / Mesa Turnip (0x5143): the 256 MB "integrated" window is a Steam Deck / amdgpu userptr cost cut.
+    // Turnip has no that revalidation tax. Leaving character XFB / clothing-screen skinning outside the window
+    // draws solid colour blocks on the creator (HUD fine) — import the whole guest window instead.
+    if (g_vk.props.vendorID == 0x5143 ||
+        (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip"))))
+        small = false, s2 = false;
 #endif
     gmem_window = w ? strtoull(w, NULL, 10) << 20 : s2 ? 1024ull << 20 : small ? 256ull << 20 : 0;
+    if (!w)
+        LOG("[vk] gmem window: %s\n",
+            gmem_window == 0 ? "whole heap"
+            : s2             ? "1024 MB (Switch 2 Edition on discrete AMD)"
+                             : "256 MB (integrated / AMD default)");
 }
 static void gmem_window_get(uint64_t *lo, uint64_t *len) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;  // (the translator and the render thread - run_queued_now - both ask)
@@ -6050,13 +6061,19 @@ static bool xm_on(void) {
     if (on < 0) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
-        // Auto-off on AMD and Adreno/Turnip: the mirror ends the render pass ~110 times a frame (tiler store/reload).
-        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
+        // Auto-off on AMD: the mirror ends the render pass ~110 times a frame.
+        // Android Adreno: also off (AHB shared memory — nothing to copy back; tiler store/reload tax).
+        // Linux Adreno/Turnip: leave Auto as ON. Without AHB, skinning XFB must land in the imported heap
+        // coherently; the Android "off" default left the character creator as solid colour blocks on Thor.
+        bool auto_off = g_vk.props.vendorID == 0x1002;
+#ifdef __ANDROID__
+        auto_off = auto_off || g_vk.props.vendorID == 0x5143;
+#endif
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF ? "F1 > Compatibility"
-                           : g_vk.props.vendorID == 0x5143 ? "this Adreno/Turnip GPU, F1 > Compatibility to turn it on"
-                           : "this AMD GPU, F1 > Compatibility to turn it on");
+                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
+        else if (on && !e && g_vk.props.vendorID == 0x5143)
+            LOG("[vk] transform feedback mirror on (Adreno/Turnip Linux; LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to turn off)\n");
     }
     return on && g_vk.host_import;
 }

@@ -64,7 +64,12 @@ cp -f third_party/fonts/DejaVu/DejaVuSans.ttf \
 cp -f third_party/fonts/DejaVu/LICENSE "$B/DejaVu-LICENSE.txt" 2>/dev/null || true
 cp -f third_party/fonts/BIZUDPGothic/OFL.txt "$B/BIZUDPGothic-OFL.txt" 2>/dev/null || true
 cp -f third_party/fonts/Baloo2/OFL.txt "$B/Baloo2-OFL.txt" 2>/dev/null || true
-cp -f tools/za/za-default.ini "$B/za-default.ini" 2>/dev/null || true
+# Thor/Armada: handheld-safe defaults (bilinear / 1x / 30). Else desktop za-default.ini.
+if [ "$ARCH" = aarch64 ] && [ -f tools/za/za-default-armada.ini ]; then
+  cp -f tools/za/za-default-armada.ini "$B/za-default.ini"
+elif [ -f tools/za/za-default.ini ]; then
+  cp -f tools/za/za-default.ini "$B/za-default.ini"
+fi
 
 # Smoke-check the same paths the runtime resolves from the exe directory
 ok=1

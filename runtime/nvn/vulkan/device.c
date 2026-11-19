@@ -1239,8 +1239,10 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     if (ab_on) ab_feat.pNext = (void *)di.pNext, di.pNext = &ab_feat;
-    // Qualcomm Adreno / Mesa Turnip (vendor 0x5143): drop feature bits the driver lacks before create
-    if (g_vk.props.vendorID == 0x5143)
+    // Qualcomm Adreno / Mesa Turnip: drop feature bits the driver lacks before create (Android always does this;
+    // on Linux also match by device name — some Turnip builds have looked odd in vendorID probes).
+    if (g_vk.props.vendorID == 0x5143 ||
+        (g_vk.props.deviceName[0] && (strstr(g_vk.props.deviceName, "Adreno") || strstr(g_vk.props.deviceName, "Turnip"))))
         vk_drop_missing_features(g_vk.phys, (VkBaseOutStructure *)di.pNext);
     VkResult created = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev);
 #ifdef _WIN32

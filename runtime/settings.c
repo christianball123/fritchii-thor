@@ -203,6 +203,9 @@ static int model_after(const char *name, const char *family) {
 
 static int gpu_profile(unsigned vendor, bool integrated, uint64_t vram, const char *name) {
     uint64_t gb = (vram + (512ull << 20)) >> 30;
+    // Qualcomm Adreno / Mesa Turnip handhelds (AYN Thor, Odin class): always the light profile — FSR1 / 1.5x / 60
+    // from za-default.ini is a desktop preset and fights the tiler.
+    if (vendor == 0x5143 || (name && (strstr(name, "Adreno") || strstr(name, "Turnip")))) return VPROF_LIGHT;
     if (integrated || gb < 4) return VPROF_LIGHT;
     int m;
     if (vendor == 0x10DE) {  // NVIDIA

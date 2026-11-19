@@ -78,6 +78,25 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
 Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux).
 
+## Graphics (character creator = solid colour blocks)
+
+If the **UI is fine** but the character preview is a black/red slab (noise along the bottom), the guest-heap GPU import was too small for Adreno — skinning / transform-feedback data sat outside the window and read as zero.
+
+### Try immediately (no rebuild)
+
+```bash
+tools/za/fix-graphics-armada.sh
+LARECOMP_VK_GMEM_WINDOW=0 ./build/linux/aarch64/za/lasrecomp
+```
+
+`LARECOMP_VK_GMEM_WINDOW=0` forces a whole-heap import. The script also sets handheld / bilinear / 1× / 30 fps and clears the shader cache.
+
+### After rebuild
+
+`git pull` then `tools/za/build-armada.sh` (or rebuild `lasrecomp`). Adreno/Turnip then defaults to a whole-heap import and Linux keeps the XFB mirror on (Android still turns it off — it has AHardwareBuffer).
+
+If it still fails, send the top of `~/.local/share/zarecomp/lasrecomp.log` (lines with `gmem`, `host import`, `xfb mirror`, `using`).
+
 ## Fonts (“No font for the game's text”)
 
 That dialog means the runtime found **neither** Switch fonts nor the bundled substitute (`DejaVuSans.ttf` / `BIZUDPGothic`). Nintendo fonts are **not** required to play.
