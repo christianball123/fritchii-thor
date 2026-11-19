@@ -34,34 +34,47 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
    **Do not** layer Fedora’s `mesa-libEGL-devel` / `mesa-libgbm-devel` — they conflict with Armada’s own Mesa (`*.armada` Turnip packages). The build turns SDL’s KMSDRM/EGL off and uses Wayland/X11 + Vulkan instead.
 
-2. Build the start screen (no game files needed yet):
+2. Build the runtime **and** the on-device game compiler tools:
 
    ```bash
    cd ~/PokeZ-Armada   # or wherever you cloned
+   git pull
    tools/za/build-armada.sh
    ```
 
-3. Prepare **your** dump on the device or copy an already-extracted tree:
+   That produces `build/linux/aarch64/za/lasrecomp` **plus** `lasgen/`, `zig/`, and `gamelib-src/` next to it. Without those, the start screen cannot compile the game.
 
-   - Extracted `exefs/` + `romfs` as on PC, **or**
-   - Base + update (`.xci` / `.nsp` / `.nup`) with your own `prod.keys` for the importer
+3. Prepare **your** dump — extracted Switch layout (recommended on Armada; avoids needing .NET `zaimport`):
 
-4. Set up and compile the game **once** (10–60+ minutes, several GB RAM):
+   ```text
+   extracted/
+     exefs/main      # required (tens of MB)
+     exefs/sdk       # usually required
+     romfs/          # or a single romfs.bin
+   ```
+
+   Put that tree either:
+
+   - in the **repo root** as `~/PokeZ-Armada/extracted/`, then always start the app **from the repo root**, or
+   - in `~/.local/share/zarecomp/extracted/` (works from any cwd)
+
+   A Ryujinx/Yuzu/Sudachi dump of title `0100F43008C44000` with update **1.0.0 / 2.0.0 / 2.0.2** is the usual source. `.xci`/`.nsp` alone are not enough until extracted.
+
+4. Compile the game **once** (10–60+ minutes, several GB RAM; keep the Thor plugged in):
 
    ```bash
-   # if you already have extracted/exefs/main:
+   # from repo root — start screen:
+   ./build/linux/aarch64/za/lasrecomp
+   # → Set up the game / Compile now
+
+   # or CLI (needs extracted/exefs/main in the repo):
    GAME=1 tools/za/build-armada.sh
    ./build/linux/aarch64/za/lasrecomp --play
    ```
 
-   Or build a redistributable folder/AppImage for yourself:
+   If setup fails, run `tools/za/doctor-armada.sh` and check `~/.local/share/zarecomp/logs/` (or `extracted/.gamebuild/`).
 
-   ```bash
-   DIST=1 ZAIMPORT=1 tools/za/build-armada.sh
-   # -> build/dist/ZA Recomp-<ver>-linux-aarch64.AppImage and .zip
-   ```
-
-   Then run the AppImage / `zarecomp` wrapper, choose your game folder, **Set up the game**, then **Play**.
+   Optional AppImage/zip for yourself: `DIST=1 tools/za/build-armada.sh`.
 
 Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux).
 

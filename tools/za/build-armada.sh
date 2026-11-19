@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build ZA Recomp on AYN Thor / Armada OS (native linux-aarch64).
 #
-#   tools/za/build-armada.sh           # start screen + runtime -> build/linux/aarch64/za/lasrecomp
+#   tools/za/build-armada.sh           # runtime + gamebuild tools (lasgen/zig) next to the binary
 #   GAME=1 tools/za/build-armada.sh    # also compile your own extracted game (needs extracted/exefs/main)
 #   DIST=1 tools/za/build-armada.sh    # AppImage + zip (+ deb unless DEB=0)
 #
@@ -37,9 +37,19 @@ if [ "${DIST:-0}" = 1 ]; then
 fi
 
 GAME=${GAME:-0} tools/za/build-linux.sh
+
+# Always install lasgen + zig next to lasrecomp so the start screen can compile the game.
+# (A bare lasrecomp binary alone cannot "Set up the game".)
+tools/za/prepare-gamebuild.sh "$ARCH"
+
 echo
 echo "Run from the repo root:"
 echo "  ./build/linux/aarch64/za/lasrecomp"
-echo "Data dir: ~/.local/share/zarecomp"
-echo "With your own dump set up, compile the game once: GAME=1 tools/za/build-armada.sh"
-echo "Or use the start screen's Set up the game (needs zaimport from DIST=1, or extracted/ already)."
+echo
+echo "Your dump must provide:"
+echo "  extracted/exefs/main   (+ extracted/romfs/ or romfs.bin)"
+echo "  — either in this repo, or in ~/.local/share/zarecomp/extracted/"
+echo
+echo "Then in the app: Set up the game / Compile now."
+echo "Or compile on the CLI:  GAME=1 tools/za/build-armada.sh"
+echo "If it still fails:      tools/za/doctor-armada.sh"
