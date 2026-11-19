@@ -232,7 +232,7 @@ int RunBottomHelperMain(const char* shared_path) {
         if (d && *d) {
             break;
         }
-        SDL_Delay(100);         usleep(100000);
+        usleep(100000);
     }
 
     const char* display = std::getenv("DISPLAY");
