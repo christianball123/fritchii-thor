@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-# Thor build: install Eden Duo companion packages (.dsmod.zip) for the bundled Eden Duo engine.
+# Thor build: install Eden Duo companion packages (.dsmod.zip) for Fritchii-Thor.
 #
-#   duo-companion.py install <modules dir> <eden data dir> FILE.dsmod.zip [...]
-#   duo-companion.py list    <modules dir> <eden data dir>
-#   duo-companion.py remove  <modules dir> <eden data dir> TITLEID
+#   duo-companion.py install <modules dir> <fritchii data dir> FILE.dsmod.zip [...]
+#   duo-companion.py list    <modules dir> <fritchii data dir>
+#   duo-companion.py remove  <modules dir> <fritchii data dir> TITLEID
 #
-# A package unpacks to <eden data>/load/<TITLEID>/<Name>-<version>/ (package.json + dualscreen/),
-# like the Android app does. Published packages carry no Linux ARM64 reader module, so the one
-# built for the Thor (<modules dir>/<TITLEID>.so) is added as modules/linux-aarch64/<TITLEID>.so
-# and listed in dualscreen/manifest.json with its checksum.
+# A package unpacks to <fritchii data>/load/<TITLEID>/<Name>-<version>/ (package.json + dualscreen/),
+# e.g. ~/.local/share/fritchii/load/… — same LoadDir Fritchii already uses for mods.
+# Published packages carry no Linux ARM64 reader module, so the one built for the Thor
+# (<modules dir>/<TITLEID>.so) is added as modules/linux-aarch64/<TITLEID>.so and listed in
+# dualscreen/manifest.json with its checksum.
 
 import hashlib
 import json

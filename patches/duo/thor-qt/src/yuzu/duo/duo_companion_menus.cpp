@@ -12,19 +12,19 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QString>
 
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 
 namespace DuoQt {
 namespace {
 
-QString EdenDataDir() {
-    // Companions live under ~/.local/share/eden/load/ (same as packaging/thor hooks).
-    const QString xdg = qEnvironmentVariable("XDG_DATA_HOME");
-    if (!xdg.isEmpty()) {
-        return xdg + QStringLiteral("/eden");
-    }
-    return QDir::homePath() + QStringLiteral("/.local/share/eden");
+QString FritchiiDataDir() {
+    // Companions unpack under <Fritchii data>/load/ — same root as mods/cheats
+    // (~/.local/share/fritchii, or a portable fritchii-data/ next to the AppImage).
+    return QString::fromStdString(
+        Common::FS::GetEdenPathString(Common::FS::EdenPath::EdenDir));
 }
 
 QString ModulesDir() {
@@ -99,7 +99,7 @@ bool InstallCompanions(QWidget* parent, const QStringList& paths) {
         return false;
     }
     const QString modules = ModulesDir();
-    const QString data = EdenDataDir();
+    const QString data = FritchiiDataDir();
     QString out, err;
     QStringList args{QStringLiteral("install"), modules, data};
     args.append(paths);
@@ -121,7 +121,7 @@ bool InstallCompanions(QWidget* parent, const QStringList& paths) {
 
 bool RemoveCompanionInteractive(QWidget* parent) {
     QString listed;
-    RunCompanionTool({QStringLiteral("list"), ModulesDir(), EdenDataDir()}, &listed, nullptr);
+    RunCompanionTool({QStringLiteral("list"), ModulesDir(), FritchiiDataDir()}, &listed, nullptr);
     if (listed.trimmed().isEmpty() || listed.contains(QStringLiteral("No companions"))) {
         QMessageBox::information(parent, QObject::tr("Remove Duo Companion"),
                                  QObject::tr("No companions are installed."));
@@ -137,7 +137,7 @@ bool RemoveCompanionInteractive(QWidget* parent) {
     }
     QString out, err;
     const int rc = RunCompanionTool(
-        {QStringLiteral("remove"), ModulesDir(), EdenDataDir(), tid.trimmed().toUpper()}, &out,
+        {QStringLiteral("remove"), ModulesDir(), FritchiiDataDir(), tid.trimmed().toUpper()}, &out,
         &err);
     if (rc != 0) {
         QMessageBox::warning(parent, QObject::tr("Remove Duo Companion"),
@@ -151,7 +151,7 @@ bool RemoveCompanionInteractive(QWidget* parent) {
 
 QString ListCompanionsText() {
     QString out;
-    RunCompanionTool({QStringLiteral("list"), ModulesDir(), EdenDataDir()}, &out, nullptr);
+    RunCompanionTool({QStringLiteral("list"), ModulesDir(), FritchiiDataDir()}, &out, nullptr);
     return out.isEmpty() ? QObject::tr("No companions are installed.") : out;
 }
 
@@ -162,7 +162,7 @@ bool DumpCompanionFiles(QWidget* parent, u64 title_id, const QString& title_name
         return false;
     }
     // Best-effort: copy any installed package for this title into dest.
-    const QString load = EdenDataDir() + QStringLiteral("/load/") +
+    const QString load = FritchiiDataDir() + QStringLiteral("/load/") +
                          QString::asprintf("%016llX", static_cast<unsigned long long>(title_id));
     QDir src(load);
     if (!src.exists()) {

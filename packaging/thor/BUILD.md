@@ -33,7 +33,7 @@ On first launch (unless declined), the hook installs `/usr/local/libexec/eden-ma
 ./Fritchii-Thor-aarch64.AppImage --remove-companion TITLEID
 ```
 
-Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/eden/load/`.
+Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/fritchii/load/`.
 
 ## Rebuild plan (Fritchii v6.1)
 
