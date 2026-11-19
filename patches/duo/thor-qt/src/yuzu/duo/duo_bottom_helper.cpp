@@ -225,7 +225,15 @@ int RunBottomHelperMain(const char* shared_path) {
     }
     setenv("SDL_VIDEODRIVER", "x11", 0);
 
-    LoadArmadaBottomEnv();
+    // armada-run-bottom may create /armada-bottom-env just before/during our start.
+    for (int i = 0; i < 50; ++i) {
+        LoadArmadaBottomEnv();
+        const char* d = std::getenv("DISPLAY");
+        if (d && *d) {
+            break;
+        }
+        SDL_Delay(100);         usleep(100000);
+    }
 
     const char* display = std::getenv("DISPLAY");
     const char* wayland = std::getenv("WAYLAND_DISPLAY");
@@ -415,19 +423,20 @@ int MaybeStartThorBottomHelper(const std::string& shared_companion_path) {
     if (!DuoScreenEnabled()) {
         return -1;
     }
-    const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
-    const bool have_env =
-        (override_path && *override_path && access(override_path, R_OK) == 0) ||
-        access(kArmadaBottomEnv, R_OK) == 0;
-    if (!have_env) {
-        return -1;
-    }
     if (shared_companion_path.empty()) {
         return -1;
     }
 
     const std::string self = ResolveSelfExe();
     const bool use_armada = access(kArmadaRunBottom, X_OK) == 0;
+    const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
+    const bool have_env =
+        (override_path && *override_path && access(override_path, R_OK) == 0) ||
+        access(kArmadaBottomEnv, R_OK) == 0;
+    // On Thor, armada-run-bottom alone is enough — it prepares the bottom DISPLAY.
+    if (!have_env && !use_armada) {
+        return -1;
+    }
 
     const pid_t pid = fork();
     if (pid < 0) {

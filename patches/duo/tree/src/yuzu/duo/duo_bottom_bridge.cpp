@@ -113,17 +113,24 @@ void StartThorBottomBridge(Core::System& system) {
         return;
     }
     const std::string armada_env = FindArmadaBottomEnv();
-    const bool armada = !armada_env.empty();
+    const bool have_run_bottom = access("/usr/bin/armada-run-bottom", X_OK) == 0;
+    // Claude: prefer armada-run-bottom when present — it sets up the bottom DISPLAY.
+    // /armada-bottom-env may only appear after that wrapper runs (or only in-session).
+    const bool armada_session = !armada_env.empty() || have_run_bottom;
     LOG_INFO(Frontend, "Thor bottom: companion found (asked {}, armada bottom session {})", true,
-             armada);
-    WriteStatus(std::string("probe: armada_env=") + (armada ? armada_env : "(missing)") +
+             armada_session);
+    WriteStatus(std::string("probe: armada_env=") +
+                (armada_env.empty() ? "(missing)" : armada_env) +
+                " armada-run-bottom=" + (have_run_bottom ? "yes" : "no") +
                 " DISPLAY=" + (std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)") +
                 " powered=" + (system.IsPoweredOn() ? "1" : "0"));
-    if (!armada) {
-        WriteStatus("skip: no /armada-bottom-env (not Game Mode?). Helper not started.");
+    if (!armada_session) {
+        WriteStatus("skip: no armada-run-bottom and no /armada-bottom-env");
         return;
     }
-    setenv("EDEN_DUO_BOTTOM_ENV", armada_env.c_str(), 1);
+    if (!armada_env.empty()) {
+        setenv("EDEN_DUO_BOTTOM_ENV", armada_env.c_str(), 1);
+    }
 
     g_path = MakeSharedPath();
     g_fd = open(g_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
@@ -154,9 +161,12 @@ void StartThorBottomBridge(Core::System& system) {
     }
 
     WriteStatus(std::string("ok: helper_pid=") + std::to_string(g_helper_pid) +
-                " shared=" + g_path + " env=" + armada_env);
+                " shared=" + g_path + " env=" +
+                (armada_env.empty() ? "(via armada-run-bottom)" : armada_env) +
+                " via_run_bottom=" + (have_run_bottom ? "1" : "0"));
     LOG_INFO(Frontend, "Thor bottom: companion goes to the bottom screen through {} (helper {}, {})",
-             std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)", g_path, armada_env);
+             std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)", g_path,
+             armada_env.empty() ? "/usr/bin/armada-run-bottom" : armada_env);
 }
 
 void PumpThorBottomBridge(Core::System& system) {
