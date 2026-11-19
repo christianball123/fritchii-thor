@@ -5253,10 +5253,11 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
 
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    const VkMemoryPropertyFlags prefs[] = {
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-    };
+    // Prefer *uncached* host-visible. Matching VISIBLE|COHERENT alone previously still picked Turnip's
+    // type 0xf (…|HOST_CACHED): GPU vertex/storage reads of that left the character body as rainbow noise
+    // while the XFB mirror's device-local buffer kept the head intact. LARECOMP_TURNIP_CACHED=1: old order.
+    bool want_cached = ENV("LARECOMP_TURNIP_CACHED") && atoi(ENV("LARECOMP_TURNIP_CACHED"));
+    const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (uint64_t off = 0; off < span; off += TW_PIECE) {
         uint64_t size = span - off < TW_PIECE ? span - off : TW_PIECE;
         size = (size + 0xFFFFull) & ~0xFFFFull;
@@ -5283,12 +5284,21 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
         vkGetBufferMemoryRequirements(g_vk.dev, probe, &req);
         vkDestroyBuffer(g_vk.dev, probe, NULL);
         uint32_t type = UINT32_MAX;
-        for (int k = 0; k < 2 && type == UINT32_MAX; k++)
-            for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++)
-                if ((req.memoryTypeBits >> i & 1) && (mp.memoryTypes[i].propertyFlags & prefs[k]) == prefs[k]) type = i;
+        for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++) {
+            bool cached_pass = want_cached ? (pass == 0) : (pass == 1);
+            for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
+                if (!(req.memoryTypeBits >> i & 1)) continue;
+                VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+                if ((f & need) != need) continue;
+                bool is_cached = (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+                if (is_cached == cached_pass) type = i;
+            }
+        }
         if (type == UINT32_MAX) type = (uint32_t)__builtin_ctz(req.memoryTypeBits);
         if (off == 0)
-            LOG("[vk] turnip window: memory type %u flags %#x (piece %llu MB)\n", type, mp.memoryTypes[type].propertyFlags,
+            LOG("[vk] turnip window: memory type %u flags %#x%s (piece %llu MB)\n", type,
+                mp.memoryTypes[type].propertyFlags,
+                (mp.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? " (cached)" : " (uncached)",
                 (unsigned long long)(size >> 20));
         VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
                                          .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
@@ -6973,6 +6983,15 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (!GM_IN(addr, size)) return false;
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Turnip: binding the dma-buf gmem window directly as a vertex/index buffer left the creator body as
+    // rainbow noise (head OK — those streams came from the device-local XFB mirror). Copy to a transient
+    // device-local buffer instead. LARECOMP_TURNIP_GMEM_VB=1 restores direct binds.
+    if (tw_ready && tw_is_adreno()) {
+        const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
+        if (!e || !atoi(e)) return false;
+    }
+#endif
     stat_vtx_host += size;
     *buf = gmem_buf;
     *off = GM_OFF(addr);

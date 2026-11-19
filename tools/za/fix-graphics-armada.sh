@@ -51,19 +51,16 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Thor best-known so far: dma-buf window + XFB mirror ON"
-echo "  (mirror OFF collapsed the character to a solid colour block)"
+echo "Thor: dma-buf window + XFB mirror ON + uncached pieces + copy VBs"
 echo
-echo "Rebuild:"
+echo "Rebuild (required for body fix):"
 echo "  tools/za/build-armada.sh"
 echo "  $B/lasrecomp"
 echo
 echo "Good log lines:"
+echo "  [vk] turnip window: memory type … (uncached)"
 echo "  [vk] guest heap imported …"
 echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
 echo
-echo "No rebuild — force mirror on with current binary:"
-echo "  LARECOMP_VK_XFB_MIRROR=1 $B/lasrecomp"
-echo
 echo "If allocate fails: LARECOMP_TURNIP_WINDOW_MB=1536"
-echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / xfb / mirror)"
+echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / uncached / mirror)"

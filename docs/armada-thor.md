@@ -88,8 +88,8 @@ Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses 
 | `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
 | `gmem import: -8` after pieces shared | Range mismatch (rebuild) |
 | Solid hair-colour block + `transform feedback mirror off` | Mirror required on Linux Turnip — set `LARECOMP_VK_XFB_MIRROR=1` |
-| Head OK, body = rainbow noise + mirror on | Partial — needs wider window / further work |
-| `guest heap imported` + `transform feedback mirror on` + full character | Target healthy path |
+| Head OK, body = rainbow noise + mirror on | Was binding cached dma-buf as VB — rebuild (uncached + copy VBs) |
+| `guest heap imported` + `transform feedback mirror on` + `(uncached)` + full character | Target healthy path |
 
 ### Fix (needs rebuild)
 
@@ -114,9 +114,10 @@ Env knobs:
 | Variable | Effect |
 |----------|--------|
 | `LARECOMP_VK_XFB_MIRROR=1` | On (needed on Linux Turnip; off → solid colour block) |
+| `LARECOMP_TURNIP_CACHED=1` | Allow HOST_CACHED dma-buf (debug; body noise) |
+| `LARECOMP_TURNIP_GMEM_VB=1` | Bind dma-buf directly as VB (debug; body noise) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (debug; character blocks again) |
 | `LARECOMP_TURNIP_WINDOW_MB=1536` | Smaller top window if allocate fails |
-| `LARECOMP_VK_GMEM_WINDOW=<MB>` | Override gmem import size (keep ≤ ~2048 on Thor) |
 
 ### Gamescope HDR
 
