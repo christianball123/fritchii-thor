@@ -51,7 +51,10 @@ bool EnvIsOff(const char* name) {
 }
 
 bool LoadArmadaBottomEnv() {
-    std::ifstream in(kArmadaBottomEnv);
+    const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
+    const char* path =
+        (override_path && *override_path) ? override_path : kArmadaBottomEnv;
+    std::ifstream in(path);
     if (!in) {
         return false;
     }
@@ -412,7 +415,11 @@ int MaybeStartThorBottomHelper(const std::string& shared_companion_path) {
     if (!DuoScreenEnabled()) {
         return -1;
     }
-    if (access(kArmadaBottomEnv, R_OK) != 0) {
+    const char* override_path = std::getenv("EDEN_DUO_BOTTOM_ENV");
+    const bool have_env =
+        (override_path && *override_path && access(override_path, R_OK) == 0) ||
+        access(kArmadaBottomEnv, R_OK) == 0;
+    if (!have_env) {
         return -1;
     }
     if (shared_companion_path.empty()) {

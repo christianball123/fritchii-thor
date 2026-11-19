@@ -7,7 +7,9 @@
 #include "yuzu/duo/duo_bottom_shared.h"
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@ namespace DuoQt {
 namespace {
 
 constexpr const char* kArmadaBottomEnv = "/armada-bottom-env";
+constexpr const char* kStatusLog = "/tmp/duo-bottom-status.log";
 
 int g_helper_pid = -1;
 int g_fd = -1;
@@ -34,12 +37,38 @@ std::string g_path;
 u64 g_ui_serial = 0;
 std::vector<u32> g_ui_scratch;
 
+void WriteStatus(const std::string& line) {
+    // Always leave a breadcrumb on the Thor so "no runner log" is diagnosable.
+    std::ofstream out(kStatusLog, std::ios::app);
+    if (!out) {
+        return;
+    }
+    const auto now =
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    out << now << " pid=" << getpid() << " " << line << '\n';
+    LOG_INFO(Frontend, "Thor bottom status: {}", line);
+}
+
 std::string MakeSharedPath() {
     const char* runtime = std::getenv("XDG_RUNTIME_DIR");
     if (!runtime || !*runtime) {
         runtime = "/tmp";
     }
     return std::string(runtime) + "/eden-duo-bottom-" + std::to_string(getpid());
+}
+
+// Prefer /armada-bottom-env; also accept $XDG_RUNTIME_DIR/armada-bottom-env.
+std::string FindArmadaBottomEnv() {
+    if (access(kArmadaBottomEnv, R_OK) == 0) {
+        return kArmadaBottomEnv;
+    }
+    if (const char* runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime) {
+        std::string alt = std::string(runtime) + "/armada-bottom-env";
+        if (access(alt.c_str(), R_OK) == 0) {
+            return alt;
+        }
+    }
+    return {};
 }
 
 bool CreateMap() {
@@ -74,25 +103,37 @@ bool CreateMap() {
 
 void StartThorBottomBridge(Core::System& system) {
     StopThorBottomBridge();
+    // Truncate status log for this boot attempt.
+    {
+        std::ofstream wipe(kStatusLog, std::ios::trunc);
+    }
 
     if (!DuoScreenEnabled()) {
+        WriteStatus("skip: EDEN_DUO_SCREEN=off");
         return;
     }
-    const bool armada = access(kArmadaBottomEnv, R_OK) == 0;
+    const std::string armada_env = FindArmadaBottomEnv();
+    const bool armada = !armada_env.empty();
     LOG_INFO(Frontend, "Thor bottom: companion found (asked {}, armada bottom session {})", true,
              armada);
+    WriteStatus(std::string("probe: armada_env=") + (armada ? armada_env : "(missing)") +
+                " DISPLAY=" + (std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)") +
+                " powered=" + (system.IsPoweredOn() ? "1" : "0"));
     if (!armada) {
+        WriteStatus("skip: no /armada-bottom-env (not Game Mode?). Helper not started.");
         return;
     }
+    setenv("EDEN_DUO_BOTTOM_ENV", armada_env.c_str(), 1);
 
     g_path = MakeSharedPath();
     g_fd = open(g_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (g_fd < 0) {
-        LOG_ERROR(Frontend, "Thor bottom: cannot create {}: {}", g_path, std::strerror(errno));
+        WriteStatus(std::string("fail: open shared ") + g_path + ": " + std::strerror(errno));
         g_path.clear();
         return;
     }
     if (!CreateMap()) {
+        WriteStatus("fail: mmap/ftruncate shared buffer");
         StopThorBottomBridge();
         return;
     }
@@ -107,14 +148,15 @@ void StartThorBottomBridge(Core::System& system) {
 
     g_helper_pid = MaybeStartThorBottomHelper(g_path);
     if (g_helper_pid < 0) {
-        LOG_ERROR(Frontend, "Thor bottom: runner ended with code {} (output in {})", -1,
-                  "/tmp/duo-bottom-runner.log");
+        WriteStatus("fail: fork/exec helper (see /tmp/duo-bottom-runner.log if any)");
         StopThorBottomBridge();
         return;
     }
 
+    WriteStatus(std::string("ok: helper_pid=") + std::to_string(g_helper_pid) +
+                " shared=" + g_path + " env=" + armada_env);
     LOG_INFO(Frontend, "Thor bottom: companion goes to the bottom screen through {} (helper {}, {})",
-             std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)", g_path, kArmadaBottomEnv);
+             std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(null)", g_path, armada_env);
 }
 
 void PumpThorBottomBridge(Core::System& system) {
