@@ -41,9 +41,9 @@ patch_key fps60 0
 patch_key fps60_lock 0
 patch_key aniso16 0
 patch_key show_fps 1
-patch_key gpu_xfb_mirror off
+patch_key gpu_xfb_mirror on
 
-# Stale pipelines from a previous OOM/crash run can stick; safe to clear
+# Stale pipelines from a previous bad run can stick; safe to clear
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
   echo "fix-graphics-armada: cleared $DATA/cache (shader / pipeline cache)"
@@ -51,16 +51,19 @@ fi
 
 echo "fix-graphics-armada: updated $INI"
 echo
-echo "Quick try without rebuild (body = rainbow noise, head OK):"
-echo "  LARECOMP_VK_XFB_MIRROR=0 $B/lasrecomp"
+echo "Thor best-known so far: dma-buf window + XFB mirror ON"
+echo "  (mirror OFF collapsed the character to a solid colour block)"
 echo
-echo "Rebuild for 2 GB Turnip window + XFB mirror default off:"
+echo "Rebuild:"
 echo "  tools/za/build-armada.sh"
 echo "  $B/lasrecomp"
 echo
 echo "Good log lines:"
 echo "  [vk] guest heap imported …"
-echo "  [vk] transform feedback mirror off (Adreno/Turnip …)"
+echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
+echo
+echo "No rebuild — force mirror on with current binary:"
+echo "  LARECOMP_VK_XFB_MIRROR=1 $B/lasrecomp"
 echo
 echo "If allocate fails: LARECOMP_TURNIP_WINDOW_MB=1536"
 echo "If still broken, send $DATA/lasrecomp.log (gmem / turnip / xfb / mirror)"

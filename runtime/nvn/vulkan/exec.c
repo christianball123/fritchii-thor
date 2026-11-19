@@ -6378,15 +6378,19 @@ static bool xm_on(void) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
         // Auto-off on AMD: the mirror ends the render pass ~110 times a frame.
-        // Adreno/Turnip: also off. Android uses AHB; Linux Turnip now shares the guest window via dma-buf, so
-        // XFB can write the imported heap directly. The mirror left the character creator with a correct head and
-        // a rainbow-noise body on Thor (tiler store/reload + copy-back races). LARECOMP_VK_XFB_MIRROR=1 to force on.
-        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
+        // Android Adreno: off (AHB — XFB writes the shared heap in place; tiler store/reload tax).
+        // Linux Adreno/Turnip: Auto = ON. dma-buf gmem alone (mirror off) collapsed the character creator to a
+        // solid hair-colour block on Thor; mirror on shows a correct head (body still noisy — needs the wider
+        // window). LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to force off.
+        bool auto_off = g_vk.props.vendorID == 0x1002;
+#ifdef __ANDROID__
+        auto_off = auto_off || g_vk.props.vendorID == 0x5143;
+#endif
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF             ? "F1 > Compatibility"
-                           : g_vk.props.vendorID == 0x5143 ? "Adreno/Turnip (dma-buf heap), F1 Compatibility to turn it on"
-                                                      : "this AMD GPU, F1 > Compatibility to turn it on");
+                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
+        else if (on && !e && g_vk.props.vendorID == 0x5143)
+            LOG("[vk] transform feedback mirror on (Adreno/Turnip Linux; LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to turn off)\n");
     }
 #if defined(__linux__) && !defined(__ANDROID__)
     return on && (g_vk.host_import || tw_ready);

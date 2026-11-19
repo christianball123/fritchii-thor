@@ -87,8 +87,9 @@ Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses 
 | `gmem … import off` + solid colour character | No shared window (old binary) |
 | `turnip window: 26 … 3285 MB` then black / crash #271 | Full-window share OOM/stall (rebuild) |
 | `gmem import: -8` after pieces shared | Range mismatch (rebuild) |
-| Head OK, body = rainbow noise + `transform feedback mirror on` | XFB mirror on Adreno — set `LARECOMP_VK_XFB_MIRROR=0` or rebuild |
-| `guest heap imported` + `transform feedback mirror off` + full character | Expected healthy path |
+| Solid hair-colour block + `transform feedback mirror off` | Mirror required on Linux Turnip — set `LARECOMP_VK_XFB_MIRROR=1` |
+| Head OK, body = rainbow noise + mirror on | Partial — needs wider window / further work |
+| `guest heap imported` + `transform feedback mirror on` + full character | Target healthy path |
 
 ### Fix (needs rebuild)
 
@@ -105,14 +106,14 @@ Good log lines:
 [vk] host memory import …: no — Adreno/Turnip will use dma-buf …
 [vk] turnip window: sharing top … MB …
 [vk] guest heap imported for shader global memory: …
-[vk] transform feedback mirror off (Adreno/Turnip …)
+[vk] transform feedback mirror on (Adreno/Turnip Linux …)
 ```
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=0` | Off (default on Adreno). Try first if body is rainbow noise |
+| `LARECOMP_VK_XFB_MIRROR=1` | On (needed on Linux Turnip; off → solid colour block) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable dma-buf share (debug; character blocks again) |
 | `LARECOMP_TURNIP_WINDOW_MB=1536` | Smaller top window if allocate fails |
 | `LARECOMP_VK_GMEM_WINDOW=<MB>` | Override gmem import size (keep ≤ ~2048 on Thor) |
@@ -186,7 +187,7 @@ export LARECOMP_VK_D24=1
 - `tools/za/build-linux.sh` / `dist-linux.sh`: native **aarch64** (and existing x86_64)
 - `tools/za/build-armada.sh`: Thor/Armada wrapper
 - Vulkan (vendor `0x5143`): quad-control default, XFB mirror auto-off, D24 without blit-DST, pipeline-bind state invalidate, drop missing device features
-- Turnip dma-buf guest window (top ~2 GB, set up at gwin pick) when `VK_EXT_external_memory_host` is missing; XFB mirror auto-off on Adreno
+- Turnip dma-buf guest window (top ~2 GB, set up at gwin pick) when `VK_EXT_external_memory_host` is missing; XFB mirror auto-on on Linux Adreno
 
 ## Reporting issues
 
