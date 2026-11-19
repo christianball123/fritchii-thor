@@ -54,9 +54,22 @@ if [ "$ARCH" = x86_64 ]; then
 fi
 python3 -c 'import venv, ensurepip' 2>/dev/null || missing_keys+=(python3-venv)
 # pkg-config module -> key (same key used in the package maps below)
-for m in x11 xext xrandr xcursor xi xscrnsaver xfixes xtst xkbcommon \
-         wayland-client wayland-protocols libdecor-0 egl libdrm gbm \
-         libpulse alsa libpipewire-0.3 dbus-1 libudev ibus-1.0; do
+# egl/gbm: required on stock Fedora; optional on Armada (custom Mesa without -devel — see build_deps.sh)
+pc_mods=(x11 xext xrandr xcursor xi xscrnsaver xfixes xtst xkbcommon
+         wayland-client wayland-protocols libdecor-0 libdrm
+         libpulse alsa libpipewire-0.3 dbus-1 libudev ibus-1.0)
+on_armada=0
+if command -v rpm-ostree >/dev/null 2>/dev/null || [ -d /run/ostree-booted ]; then
+    if rpm -q mesa-libEGL 2>/dev/null | grep -q '\.armada\.'; then
+        on_armada=1
+    fi
+fi
+if [ "$on_armada" != 1 ]; then
+    pc_mods+=(egl gbm)
+else
+    echo "build-linux: Armada Mesa detected — skipping egl/gbm header checks (SDL3 will build without KMSDRM)"
+fi
+for m in "${pc_mods[@]}"; do
     pkg-config --exists "$m" 2>/dev/null || missing_keys+=("$m")
 done
 # unique, stable order
@@ -86,6 +99,10 @@ if [ ${#missing_keys[@]} -gt 0 ] && [ "${PKGCHECK:-1}" != 0 ]; then
         [libpulse]=pulseaudio-libs-devel [alsa]=alsa-lib-devel [libpipewire-0.3]=pipewire-devel
         [dbus-1]=dbus-devel [libudev]=systemd-devel [ibus-1.0]=ibus-devel
     )
+    # On Armada never suggest mesa-*-devel (conflicts with *.armada Mesa RPMs)
+    if [ "$on_armada" = 1 ]; then
+        unset 'RPM[egl]' 'RPM[gbm]'
+    fi
     deb_pkgs=() rpm_pkgs=()
     for k in "${missing_keys[@]}"; do
         [ -n "${DEB[$k]:-}" ] && deb_pkgs+=("${DEB[$k]}")

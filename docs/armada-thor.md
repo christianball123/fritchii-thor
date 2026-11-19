@@ -32,6 +32,8 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
    That layers clang, SDL3 backend `-devel` headers, Vulkan loader headers, etc. After reboot, `pkg-config --exists x11 wayland-client` should succeed.
 
+   **Do not** layer Fedora’s `mesa-libEGL-devel` / `mesa-libgbm-devel` — they conflict with Armada’s own Mesa (`*.armada` Turnip packages). The build turns SDL’s KMSDRM/EGL off and uses Wayland/X11 + Vulkan instead.
+
 2. Build the start screen (no game files needed yet):
 
    ```bash

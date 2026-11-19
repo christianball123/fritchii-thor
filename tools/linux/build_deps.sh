@@ -74,9 +74,17 @@ fi
 
 if [ ! -f "$P/lib/libSDL3.so" ]; then
     unpack SDL3-3.4.16.tar.gz sdl
+    # Armada OS ships a custom Mesa (*.armada) without matching -devel RPMs; Fedora mesa-*-devel
+    # conflicts with it. ZA Recomp only needs Wayland/X11 + Vulkan — turn KMSDRM/EGL off when
+    # those headers are missing so the SDL3 build still succeeds.
+    SDL_EXTRA=()
+    if ! pkg-config --exists egl 2>/dev/null || ! pkg-config --exists gbm 2>/dev/null; then
+        echo "deps: no egl/gbm headers (Armada Mesa) — building SDL3 without KMSDRM/OpenGL ES"
+        SDL_EXTRA+=(-DSDL_KMSDRM=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF)
+    fi
     cmake -S "$W/sdl" -B "$W/sdl/build" -G Ninja "${CMAKE_CROSS[@]}" -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF \
-        -DSDL_EXAMPLES=OFF -DSDL_RPATH=OFF
+        -DSDL_EXAMPLES=OFF -DSDL_RPATH=OFF "${SDL_EXTRA[@]}"
     cmake --build "$W/sdl/build" -j"$JOBS" && cmake --install "$W/sdl/build"
 fi
 
