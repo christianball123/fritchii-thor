@@ -85,3 +85,5 @@ against fritchii-v6.1.
 - apply.sh: tree/ wins over thor-qt (QLatin1Char must survive).
 - Packaging: Fritchii Linux GUI is lichii; eden-cli optional.
 - CI: ccache restore/save; ninja -k 0; QChar guard after apply.
+
+- Hook 0023: provide GetProcessorCount + stub g_cpu_caps on aarch64 (link lichii).

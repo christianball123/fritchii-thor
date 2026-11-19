@@ -1,0 +1,38 @@
+diff --git a/src/common/cpu_features.cpp b/src/common/cpu_features.cpp
+index ea3224bb4..939c667fb 100644
+--- a/src/common/cpu_features.cpp
++++ b/src/common/cpu_features.cpp
+@@ -243,7 +243,33 @@ const CPUCaps g_cpu_caps = [] {
+ }();
+ 
+ #else
++// aarch64 / non-x86: CPUCaps is a stub; still need GetProcessorCount + g_cpu_caps for the Qt UI.
++std::optional<int> GetProcessorCount() {
++#if defined(__unix__)
++    const int thread_count = static_cast<int>(std::thread::hardware_concurrency());
++    if (thread_count <= 0) {
++        return std::nullopt;
++    }
++    std::ifstream smt("/sys/devices/system/cpu/smt/active");
++    char state = '0';
++    if (smt) {
++        smt.read(&state, sizeof(state));
++    }
++    switch (state) {
++    case '0':
++        return thread_count;
++    case '1':
++        return std::max(1, thread_count / 2);
++    default:
++        return thread_count;
++    }
++#else
++    const int thread_count = static_cast<int>(std::thread::hardware_concurrency());
++    return thread_count > 0 ? std::optional<int>{thread_count} : std::nullopt;
++#endif
++}
+ 
++const CPUCaps g_cpu_caps = {};
+ #endif
+ 
+ #if defined(ARCHITECTURE_x86_64)
