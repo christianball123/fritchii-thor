@@ -30,7 +30,6 @@ constexpr const char* kArmadaBottomEnv = "/armada-bottom-env";
 int g_helper_pid = -1;
 int g_fd = -1;
 void* g_map = nullptr;
-std::size_t g_map_bytes = 0;
 std::string g_path;
 u64 g_ui_serial = 0;
 std::vector<u32> g_ui_scratch;
@@ -43,43 +42,31 @@ std::string MakeSharedPath() {
     return std::string(runtime) + "/eden-duo-bottom-" + std::to_string(getpid());
 }
 
-bool ResizeMap(u32 width, u32 height) {
-    const std::size_t bytes = DuoBottomMapBytes(width, height);
-    if (g_map && g_map_bytes >= bytes) {
-        return true;
-    }
+bool CreateMap() {
     if (g_map) {
-        munmap(g_map, g_map_bytes);
-        g_map = nullptr;
-        g_map_bytes = 0;
+        return true;
     }
     if (g_fd < 0) {
         return false;
     }
-    if (ftruncate(g_fd, static_cast<off_t>(bytes)) != 0) {
+    if (ftruncate(g_fd, static_cast<off_t>(kDuoBottomMapBytes)) != 0) {
         LOG_ERROR(Frontend, "Thor bottom: cannot create {}: {}", g_path, std::strerror(errno));
         return false;
     }
-    void* map = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, g_fd, 0);
+    void* map = mmap(nullptr, kDuoBottomMapBytes, PROT_READ | PROT_WRITE, MAP_SHARED, g_fd, 0);
     if (map == MAP_FAILED) {
         LOG_ERROR(Frontend, "Thor bottom: cannot create {}: {}", g_path, std::strerror(errno));
         return false;
     }
+    std::memset(map, 0, kDuoBottomHeaderBytes);
+    DuoBottomWriteU32(map, 0x00, kDuoBottomMagic);
+    DuoBottomWriteU32(map, 0x04, kDuoBottomVersion);
+    DuoBottomWriteU32(map, 0x08, static_cast<std::uint32_t>(getpid()));
+    DuoBottomWriteU32(map, 0x70, 1240);
+    DuoBottomWriteU32(map, 0x74, 1080);
+    DuoBottomWriteU64(map, 0x68, 0);
     g_map = map;
-    g_map_bytes = bytes;
-
-    auto* header = static_cast<DuoBottomHeader*>(g_map);
-    std::memset(header, 0, sizeof(DuoBottomHeader));
-    header->magic = kDuoBottomMagic;
-    header->version = kDuoBottomVersion;
-    header->width = width;
-    header->height = height;
-    header->stride_bytes = width * 4u;
-    header->format = kDuoBottomFormatRGBA8;
-    header->seq = 0;
-    header->ready = 1;
-
-    LOG_INFO(Frontend, "Thor bottom: helper screen is {}x{}", width, height);
+    LOG_INFO(Frontend, "Thor bottom: helper screen is {}x{}", 1240, 1080);
     return true;
 }
 
@@ -105,21 +92,15 @@ void StartThorBottomBridge(Core::System& system) {
         g_path.clear();
         return;
     }
-
-    // Default panel size until the first companion UI publish arrives.
-    constexpr u32 kDefaultW = 640;
-    constexpr u32 kDefaultH = 740;
-    if (!ResizeMap(kDefaultW, kDefaultH)) {
+    if (!CreateMap()) {
         StopThorBottomBridge();
         return;
     }
 
-    // Advertise a physical aux panel so DSMod companions publish UI even without
-    // Renderer::SetAuxWindow (Thor uses the SDL helper instead).
     if (system.IsPoweredOn()) {
         auto& aux = system.GPU().DSModAux();
-        aux.width.store(kDefaultW);
-        aux.height.store(kDefaultH);
+        aux.width.store(1240);
+        aux.height.store(1080);
         aux.present.store(true);
         aux.panel_is_inline.store(false);
     }
@@ -127,7 +108,7 @@ void StartThorBottomBridge(Core::System& system) {
     g_helper_pid = MaybeStartThorBottomHelper(g_path);
     if (g_helper_pid < 0) {
         LOG_ERROR(Frontend, "Thor bottom: runner ended with code {} (output in {})", -1,
-                  "/duo-bottom-runner.log");
+                  "/tmp/duo-bottom-runner.log");
         StopThorBottomBridge();
         return;
     }
@@ -153,22 +134,18 @@ void PumpThorBottomBridge(Core::System& system) {
     if (!aux.TakeUi(g_ui_scratch, w, h, g_ui_serial)) {
         return;
     }
-    if (w == 0 || h == 0 || g_ui_scratch.size() != static_cast<std::size_t>(w) * h) {
-        return;
-    }
-    if (!ResizeMap(w, h)) {
+    if (w == 0 || h == 0 || w > kDuoBottomMaxW || h > kDuoBottomMaxH ||
+        g_ui_scratch.size() != static_cast<std::size_t>(w) * h) {
         return;
     }
 
-    auto* header = static_cast<DuoBottomHeader*>(g_map);
-    auto* pixels = reinterpret_cast<u32*>(static_cast<std::uint8_t*>(g_map) + DuoBottomPixelsOffset());
+    auto* pixels = reinterpret_cast<u32*>(static_cast<std::uint8_t*>(g_map) + kDuoBottomPixelsOff);
     std::memcpy(pixels, g_ui_scratch.data(), g_ui_scratch.size() * sizeof(u32));
-    header->width = w;
-    header->height = h;
-    header->stride_bytes = w * 4u;
-    header->ready = 1;
-    // seq last so readers never see a half-written frame with a new seq.
-    header->seq += 1;
+    DuoBottomWriteU32(g_map, 0x70, w);
+    DuoBottomWriteU32(g_map, 0x74, h);
+    DuoBottomWriteU32(g_map, 0x20, 3);
+    // seq last — readers never see a half-written frame with a new seq.
+    DuoBottomWriteU64(g_map, 0x68, DuoBottomReadU64(g_map, 0x68) + 1);
 
     aux.width.store(w);
     aux.height.store(h);
@@ -181,9 +158,8 @@ void StopThorBottomBridge() {
         g_helper_pid = -1;
     }
     if (g_map) {
-        munmap(g_map, g_map_bytes);
+        munmap(g_map, kDuoBottomMapBytes);
         g_map = nullptr;
-        g_map_bytes = 0;
     }
     if (g_fd >= 0) {
         close(g_fd);

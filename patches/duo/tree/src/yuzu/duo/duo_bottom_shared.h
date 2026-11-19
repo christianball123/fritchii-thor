@@ -1,48 +1,59 @@
 // SPDX-FileCopyrightText: Copyright 2026 Claude / Christian Ball (Thor Fritchii build)
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Shared companion framebuffer between the main Fritchii process (top gamescope
-// DISPLAY) and the --duo-bottom-helper child (bottom Xwayland from
-// /armada-bottom-env). Reconstructed from Claude's working Thor AppImage.
+// Shared companion framebuffer layout matching Claude's working Thor AppImage
+// (thor_bottom.cpp). Magic is 'DOUB' LE; pixels begin at offset 0x7c.
 
 #pragma once
 
-#include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 namespace DuoQt {
 
-inline constexpr std::uint32_t kDuoBottomMagic = 0x424F5544u; // 'DUOB' LE
+inline constexpr std::uint32_t kDuoBottomMagic = 0x42554F44u; // 'DOUB' LE
 inline constexpr std::uint32_t kDuoBottomVersion = 1;
-inline constexpr std::uint32_t kDuoBottomFormatRGBA8 = 0;
+inline constexpr std::uint32_t kDuoBottomMaxW = 2560;
+inline constexpr std::uint32_t kDuoBottomMaxH = 1440;
+// Claude: ftruncate to 0xe10080 = 128 + 2560*1440*4 (header region padded).
+inline constexpr std::size_t kDuoBottomHeaderBytes = 0x80;
+inline constexpr std::size_t kDuoBottomPixelsOff = 0x7c;
+inline constexpr std::size_t kDuoBottomMapBytes =
+    kDuoBottomHeaderBytes + static_cast<std::size_t>(kDuoBottomMaxW) * kDuoBottomMaxH * 4u;
 
-#pragma pack(push, 1)
-struct DuoBottomHeader {
-    std::uint32_t magic{kDuoBottomMagic};
-    std::uint32_t version{kDuoBottomVersion};
-    std::uint32_t width{0};
-    std::uint32_t height{0};
-    std::uint32_t stride_bytes{0}; // width * 4
-    std::uint32_t format{kDuoBottomFormatRGBA8};
-    // Writers bump seq after pixels are fully written; readers present on change.
-    std::uint64_t seq{0};
-    std::uint32_t ready{0}; // 1 once header+pixels are valid
-    std::uint32_t pad{0};
-};
-#pragma pack(pop)
+// Layout (little-endian), reconstructed from Claude's eden binary:
+//   0x00 u32 magic (DOUB)
+//   0x04 u32 version (1)
+//   0x08 u32 parent_pid
+//   0x0c u32 helper_pid
+//   0x20 u32 present_state (3 while showing)
+//   0x68 u64 seq
+//   0x70 u32 width
+//   0x74 u32 height
+//   0x7c … RGBA8 pixels (stride = width*4)
 
-inline constexpr std::size_t DuoBottomPixelsOffset() {
-    return sizeof(DuoBottomHeader);
+inline void DuoBottomWriteU32(void* base, std::size_t off, std::uint32_t v) {
+    *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(base) + off) = v;
 }
 
-inline std::size_t DuoBottomMapBytes(std::uint32_t width, std::uint32_t height) {
-    return DuoBottomPixelsOffset() + static_cast<std::size_t>(width) * height * 4u;
+inline std::uint32_t DuoBottomReadU32(const void* base, std::size_t off) {
+    return *reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(base) + off);
 }
 
-inline bool DuoBottomHeaderOk(const DuoBottomHeader& h) {
-    return h.magic == kDuoBottomMagic && h.version == kDuoBottomVersion && h.ready != 0 &&
-           h.width > 0 && h.height > 0 && h.stride_bytes >= h.width * 4u;
+inline void DuoBottomWriteU64(void* base, std::size_t off, std::uint64_t v) {
+    *reinterpret_cast<std::uint64_t*>(static_cast<std::uint8_t*>(base) + off) = v;
+}
+
+inline std::uint64_t DuoBottomReadU64(const void* base, std::size_t off) {
+    return *reinterpret_cast<const std::uint64_t*>(static_cast<const std::uint8_t*>(base) + off);
+}
+
+inline bool DuoBottomHeaderOk(const void* base) {
+    return DuoBottomReadU32(base, 0x00) == kDuoBottomMagic &&
+           DuoBottomReadU32(base, 0x04) == kDuoBottomVersion &&
+           DuoBottomReadU32(base, 0x70) > 0 && DuoBottomReadU32(base, 0x74) > 0 &&
+           DuoBottomReadU32(base, 0x70) <= kDuoBottomMaxW &&
+           DuoBottomReadU32(base, 0x74) <= kDuoBottomMaxH;
 }
 
 } // namespace DuoQt

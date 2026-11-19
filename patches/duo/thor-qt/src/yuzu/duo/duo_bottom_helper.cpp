@@ -1,22 +1,19 @@
 // SPDX-FileCopyrightText: Copyright 2026 Claude / Christian Ball (Thor Fritchii build)
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Thor bottom-screen helper — matches Claude's working AppImage behaviour:
-//   load /armada-bottom-env → SDL window on bottom DISPLAY → X11 claim over
-//   ArmadaLive ("taking it back") → blit shared /eden-duo-bottom-* frames.
+// Thor bottom-screen helper matching Claude's working AppImage (thor_bottom.cpp):
+//   /armada-bottom-env → SDL window → STEAM_GAME=852199 claim → blit shared DOUB map.
 
 #include "yuzu/duo/duo_bottom_helper.h"
 
 #include "yuzu/duo/duo_bottom_shared.h"
 
 #include <atomic>
-#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include <dlfcn.h>
@@ -35,6 +32,11 @@ namespace {
 
 constexpr const char* kArmadaBottomEnv = "/armada-bottom-env";
 constexpr const char* kHelperFlag = "--duo-bottom-helper";
+constexpr const char* kArmadaRunBottom = "/usr/bin/armada-run-bottom";
+// Claude's binary stamps this Steam app id so gamescope/Armada shows the window
+// on the bottom layer (not _NET_WM_STATE).
+constexpr std::uint32_t kThorSteamGameId = 852199u; // 0xd00e7
+constexpr unsigned long kXaCardinal = 6;            // XA_CARDINAL
 
 std::atomic<bool> g_helper_stop{false};
 
@@ -72,8 +74,6 @@ bool LoadArmadaBottomEnv() {
     return true;
 }
 
-// ---- X11 claim (dlopen; no link-time libX11) ---------------------------------
-
 using XDisplay = struct _XDisplay;
 using XWindow = unsigned long;
 using XAtom = unsigned long;
@@ -81,17 +81,16 @@ using XStatus = int;
 
 struct X11Api {
     void* lib{};
-    XDisplay* (*XOpenDisplay)(const char*){};
-    int (*XCloseDisplay)(XDisplay*){};
+    XAtom (*XInternAtom)(XDisplay*, const char*, int){};
+    XWindow (*XDefaultRootWindow)(XDisplay*){};
+    int (*XChangeProperty)(XDisplay*, XWindow, XAtom, XAtom, int, int, const unsigned char*,
+                           int){};
     XStatus (*XGetWindowProperty)(XDisplay*, XWindow, XAtom, long, long, int, XAtom, XAtom*, int*,
                                   unsigned long*, unsigned long*, unsigned char**){};
-    int (*XFree)(void*){};
-    XAtom (*XInternAtom)(XDisplay*, const char*, int){};
-    int (*XRaiseWindow)(XDisplay*, XWindow){};
-    int (*XChangeProperty)(XDisplay*, XWindow, XAtom, XAtom, int, int, const unsigned char*, int){};
     int (*XFlush)(XDisplay*){};
+    int (*XRaiseWindow)(XDisplay*, XWindow){};
+    int (*XFree)(void*){};
     XStatus (*XQueryTree)(XDisplay*, XWindow, XWindow*, XWindow*, XWindow**, unsigned int*){};
-    int (*XMapRaised)(XDisplay*, XWindow){};
 };
 
 bool LoadX11(X11Api& x) {
@@ -103,26 +102,47 @@ bool LoadX11(X11Api& x) {
 #define LOAD(sym)                                                                                  \
     do {                                                                                           \
         x.sym = reinterpret_cast<decltype(x.sym)>(dlsym(x.lib, #sym));                             \
-        if (!x.sym) {                                                                              \
-            LOG_ERROR(Frontend, "duo bottom helper: missing {}", #sym);                            \
-            return false;                                                                          \
-        }                                                                                          \
     } while (0)
-    LOAD(XOpenDisplay);
-    LOAD(XCloseDisplay);
-    LOAD(XGetWindowProperty);
-    LOAD(XFree);
     LOAD(XInternAtom);
-    LOAD(XRaiseWindow);
+    LOAD(XDefaultRootWindow); // may be missing (macro); QueryTree fallback below
     LOAD(XChangeProperty);
+    LOAD(XGetWindowProperty);
     LOAD(XFlush);
+    LOAD(XRaiseWindow);
+    LOAD(XFree);
     LOAD(XQueryTree);
-    LOAD(XMapRaised);
 #undef LOAD
+    if (!x.XInternAtom || !x.XChangeProperty || !x.XGetWindowProperty || !x.XFlush ||
+        !x.XRaiseWindow || !x.XFree) {
+        LOG_ERROR(Frontend, "duo bottom helper: incomplete libX11");
+        return false;
+    }
     return true;
 }
 
+XWindow ResolveRoot(X11Api& x, XDisplay* dpy, XWindow xid) {
+    if (x.XDefaultRootWindow) {
+        return x.XDefaultRootWindow(dpy);
+    }
+    if (x.XQueryTree) {
+        XWindow root = 0, parent = 0, *children = nullptr;
+        unsigned int n = 0;
+        if (x.XQueryTree(dpy, xid, &root, &parent, &children, &n)) {
+            if (children) {
+                x.XFree(children);
+            }
+            if (root) {
+                return root;
+            }
+        }
+    }
+    return xid;
+}
+
 std::string CollectSteamAppIds(X11Api& x, XDisplay* dpy, XWindow root) {
+    if (!x.XQueryTree) {
+        return {};
+    }
     XWindow root_ret{}, parent{};
     XWindow* children{};
     unsigned int n = 0;
@@ -137,11 +157,11 @@ std::string CollectSteamAppIds(X11Api& x, XDisplay* dpy, XWindow root) {
             int actual_format = 0;
             unsigned long nitems = 0, bytes_after = 0;
             unsigned char* prop = nullptr;
-                const XStatus st = x.XGetWindowProperty(
-                    dpy, children[i], steam_game, 0, 1, /*delete=*/0, /*AnyPropertyType*/ 0,
-                    &actual_type, &actual_format, &nitems, &bytes_after, &prop);
-            if (st == 0 /*Success*/ && prop && nitems > 0 && actual_format == 32) {
-                const auto app = *reinterpret_cast<unsigned long*>(prop);
+            const XStatus st = x.XGetWindowProperty(
+                dpy, children[i], steam_game, 0, 1, /*delete=*/0, /*AnyPropertyType*/ 0,
+                &actual_type, &actual_format, &nitems, &bytes_after, &prop);
+            if (st == 0 && prop && nitems > 0 && actual_format == 32) {
+                const auto app = static_cast<unsigned long>(*reinterpret_cast<std::uint32_t*>(prop));
                 if (!ids.empty()) {
                     ids.push_back(' ');
                 }
@@ -169,30 +189,22 @@ void ClaimBottomScreen(X11Api& x, SDL_Window* window) {
         return;
     }
     auto* dpy = static_cast<XDisplay*>(display_ptr);
-    // XDefaultRootWindow is an Xlib macro — get root via QueryTree on our window.
-    XWindow root = 0, parent = 0, *children = nullptr;
-    unsigned int n = 0;
-    if (x.XQueryTree(dpy, xid, &root, &parent, &children, &n) && children) {
-        x.XFree(children);
-    }
-    if (root == 0) {
-        root = xid;
-    }
+    const XWindow root = ResolveRoot(x, dpy, xid);
 
     const std::string app_ids = CollectSteamAppIds(x, dpy, root);
     LOG_INFO(Frontend, "duo bottom helper: bottom screen was showing app ids [ {}]; taking it back",
              app_ids);
 
-    // Above + fullscreen WM hints so ArmadaLive / Steam stay underneath.
-    const XAtom net_state = x.XInternAtom(dpy, "_NET_WM_STATE", 0);
-    const XAtom atom_above = x.XInternAtom(dpy, "_NET_WM_STATE_ABOVE", 0);
-    const XAtom atom_fs = x.XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0);
-    const XAtom atom_atom = x.XInternAtom(dpy, "ATOM", 0);
-    XAtom states[2] = {atom_above, atom_fs};
-    x.XChangeProperty(dpy, xid, net_state, atom_atom, 32, /*PropModeReplace*/ 0,
-                      reinterpret_cast<const unsigned char*>(states), 2);
-
-    x.XMapRaised(dpy, xid);
+    // Gamescope / ArmadaLive: mark this window as the Steam game layer (Claude: 852199).
+    const XAtom steam = x.XInternAtom(dpy, "STEAM_GAME", 0);
+    const XAtom baselayer = x.XInternAtom(dpy, "GAMESCOPECTRL_BASELAYER_APPID", 0);
+    std::uint32_t appid = kThorSteamGameId;
+    x.XChangeProperty(dpy, xid, steam, kXaCardinal, 32, /*PropModeReplace*/ 0,
+                      reinterpret_cast<const unsigned char*>(&appid), 1);
+    if (baselayer) {
+        x.XChangeProperty(dpy, xid, baselayer, kXaCardinal, 32, 0,
+                          reinterpret_cast<const unsigned char*>(&appid), 1);
+    }
     x.XRaiseWindow(dpy, xid);
     x.XFlush(dpy);
 
@@ -207,7 +219,6 @@ int RunBottomHelperMain(const char* shared_path) {
 
     if (const char* driver = std::getenv("EDEN_DUO_HELPER_DRIVER")) {
         setenv("SDL_VIDEODRIVER", driver, 1);
-        setenv("QT_QPA_PLATFORM", driver, 0);
     }
     setenv("SDL_VIDEODRIVER", "x11", 0);
 
@@ -240,7 +251,8 @@ int RunBottomHelperMain(const char* shared_path) {
         return 1;
     }
 
-    std::uint32_t win_w = 640, win_h = 740;
+    // Claude used 1240×1080 “Eden Duo Companion”; fall back to display bounds.
+    std::uint32_t win_w = 1240, win_h = 1080;
     if (const SDL_DisplayID* displays = SDL_GetDisplays(nullptr); displays != nullptr) {
         SDL_Rect bounds{};
         if (SDL_GetDisplayBounds(displays[0], &bounds) && bounds.w > 0 && bounds.h > 0) {
@@ -250,9 +262,9 @@ int RunBottomHelperMain(const char* shared_path) {
         SDL_free(const_cast<SDL_DisplayID*>(displays));
     }
 
-    SDL_Window* window = SDL_CreateWindow(
-        "Fritchii Duo (bottom)", static_cast<int>(win_w), static_cast<int>(win_h),
-        SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    SDL_Window* window =
+        SDL_CreateWindow("Eden Duo Companion", static_cast<int>(win_w), static_cast<int>(win_h),
+                         SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS);
     if (!window) {
         LOG_ERROR(Frontend, "duo bottom helper: no window: {}", SDL_GetError());
         SDL_Quit();
@@ -274,6 +286,25 @@ int RunBottomHelperMain(const char* shared_path) {
         ClaimBottomScreen(x11, window);
     }
 
+    const int fd = open(shared_path, O_RDWR);
+    if (fd < 0) {
+        LOG_ERROR(Frontend, "duo bottom helper: no shared companion at {}", shared_path);
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    void* map = mmap(nullptr, kDuoBottomMapBytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) {
+        LOG_ERROR(Frontend, "duo bottom helper: mmap failed");
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    DuoBottomWriteU32(map, 0x0c, static_cast<std::uint32_t>(getpid()));
+
     SDL_Texture* texture = nullptr;
     std::uint32_t tex_w = 0, tex_h = 0;
     std::uint64_t last_seq = 0;
@@ -285,30 +316,11 @@ int RunBottomHelperMain(const char* shared_path) {
             break;
         }
 
-        const int fd = open(shared_path, O_RDONLY);
-        if (fd < 0) {
-            SDL_Delay(16);
-            continue;
-        }
-        struct stat st {};
-        if (fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(sizeof(DuoBottomHeader))) {
-            close(fd);
-            SDL_Delay(16);
-            continue;
-        }
-        void* map = mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_SHARED, fd, 0);
-        close(fd);
-        if (map == MAP_FAILED) {
-            SDL_Delay(16);
-            continue;
-        }
-
-        const auto* header = static_cast<const DuoBottomHeader*>(map);
-        if (DuoBottomHeaderOk(*header) && header->seq != last_seq) {
-            const std::uint32_t w = header->width;
-            const std::uint32_t h = header->height;
-            const size_t need = DuoBottomMapBytes(w, h);
-            if (static_cast<size_t>(st.st_size) >= need) {
+        if (DuoBottomHeaderOk(map)) {
+            const std::uint64_t seq = DuoBottomReadU64(map, 0x68);
+            if (seq != last_seq) {
+                const std::uint32_t w = DuoBottomReadU32(map, 0x70);
+                const std::uint32_t h = DuoBottomReadU32(map, 0x74);
                 if (!texture || tex_w != w || tex_h != h) {
                     if (texture) {
                         SDL_DestroyTexture(texture);
@@ -320,20 +332,19 @@ int RunBottomHelperMain(const char* shared_path) {
                     tex_h = h;
                 }
                 if (texture) {
-                    const auto* pixels = reinterpret_cast<const std::uint8_t*>(map) +
-                                         DuoBottomPixelsOffset();
-                    SDL_UpdateTexture(texture, nullptr, pixels,
-                                      static_cast<int>(header->stride_bytes));
+                    const auto* pixels =
+                        reinterpret_cast<const std::uint8_t*>(map) + kDuoBottomPixelsOff;
+                    SDL_UpdateTexture(texture, nullptr, pixels, static_cast<int>(w * 4));
                     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                     SDL_RenderClear(renderer);
                     SDL_RenderTexture(renderer, texture, nullptr, nullptr);
                     SDL_RenderPresent(renderer);
-                    last_seq = header->seq;
+                    DuoBottomWriteU32(map, 0x20, 3);
+                    last_seq = seq;
                     ++pictures;
                 }
             }
         }
-        munmap(map, static_cast<size_t>(st.st_size));
 
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -342,14 +353,13 @@ int RunBottomHelperMain(const char* shared_path) {
             }
         }
 
-        // ArmadaLive / Steam may fight for stacking — re-claim periodically.
         if (have_x11 && (++claim_tick % 45) == 0) {
             ClaimBottomScreen(x11, window);
         }
-
         SDL_Delay(8);
     }
 
+    munmap(map, kDuoBottomMapBytes);
     if (texture) {
         SDL_DestroyTexture(texture);
     }
@@ -362,6 +372,16 @@ int RunBottomHelperMain(const char* shared_path) {
 
     LOG_INFO(Frontend, "duo bottom helper: done, {} pictures shown", pictures);
     return 0;
+}
+
+std::string ResolveSelfExe() {
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return std::string(buf);
+    }
+    return "eden";
 }
 
 } // namespace
@@ -399,17 +419,33 @@ int MaybeStartThorBottomHelper(const std::string& shared_companion_path) {
         return -1;
     }
 
+    const std::string self = ResolveSelfExe();
+    const bool use_armada = access(kArmadaRunBottom, X_OK) == 0;
+
     const pid_t pid = fork();
     if (pid < 0) {
         LOG_ERROR(Frontend, "duo bottom helper: fork failed");
         return -1;
     }
     if (pid == 0) {
-        const char* self = "/proc/self/exe";
-        execl(self, self, kHelperFlag, shared_companion_path.c_str(), static_cast<char*>(nullptr));
+        setsid();
+        // Log child output like Claude's /duo-bottom-runner.log
+        const int logfd = open("/tmp/duo-bottom-runner.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (logfd >= 0) {
+            dup2(logfd, STDOUT_FILENO);
+            dup2(logfd, STDERR_FILENO);
+            close(logfd);
+        }
+        if (use_armada) {
+            execl(kArmadaRunBottom, kArmadaRunBottom, self.c_str(), kHelperFlag,
+                  shared_companion_path.c_str(), static_cast<char*>(nullptr));
+        }
+        execl(self.c_str(), self.c_str(), kHelperFlag, shared_companion_path.c_str(),
+              static_cast<char*>(nullptr));
         _exit(127);
     }
-    LOG_INFO(Frontend, "helper: {} {} {}", "/proc/self/exe", kHelperFlag, shared_companion_path);
+    LOG_INFO(Frontend, "helper: {} {} {}", use_armada ? kArmadaRunBottom : self.c_str(),
+             kHelperFlag, shared_companion_path);
     return static_cast<int>(pid);
 }
 
