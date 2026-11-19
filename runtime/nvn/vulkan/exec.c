@@ -797,8 +797,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         if (at == -2) at = ENV("LARECOMP_TEST_LOST_REPORT") ? atol(ENV("LARECOMP_TEST_LOST_REPORT")) : -1;
         if (at > 0 && (long)subr_now.seq == at) { uint64_t d = 0; vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &d); lost_report(d); }
     }
-    // Guest CPU wrote the dma-buf via mmap (not vkMapMemory): flush those lines before the GPU samples them as VBs.
-    tw_dma_sync_for_gpu();
+    // Do not DMA_BUF_SYNC_END|RW the whole window here: unpaired END|RW writeback of CPU-dirty lines
+    // clobbered GPU xm_copy_back / skinned body pages (b746: head only). 8066 had no sync and a visible body.
     rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands; its vkQueueSubmit2 time is in RecStats)
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
@@ -2557,9 +2557,9 @@ static GWin gwin_ = {HEAP_BASE, HEAP_MAX, 0, false};
 static atomic_bool gwin_done;
 #if defined(__linux__) && !defined(__ANDROID__)
 // Top of Z-A's phys window shared with Turnip via dma-buf (see turnip_window_* below).
-// Top ~2048 MB + XFB mirror on + direct gmem VBs + HOST_CACHED + DMA_BUF sync before submit.
-// Uncached hid the body (5bb2); missing dma-buf sync left cached body as rainbow (8066).
-#define TW_CAP_MB 2048ull
+// 1536+64 ring → ~1600 MB logged span: only Thor config with a visible body (8066).
+// 2048+64 (2112) + bad dma-buf sync → head only (5bb2/b746) despite equal host VB traffic.
+#define TW_CAP_MB 1536ull
 static void turnip_window_prepare_early(uint64_t gbase, uint64_t gmax);
 #endif
 static void gwin_pick(void) {
@@ -5203,12 +5203,14 @@ static void tw_restore_anon(uint64_t base, uint64_t span) {
         LOG("[vk] turnip window: restore anonymous map at %llx failed (%s)\n", (unsigned long long)base, strerror(errno));
 }
 
+// Optional: LARECOMP_TURNIP_DMABUF_SYNC=1 enables unpaired END|WRITE before submit (debug; hid body on Thor).
 static void tw_dma_sync_for_gpu(void) {
-    if (!tw_ready) return;
-    // End a CPU write session so write-back caches hit memory before the GPU reads the sparse buffer as VB/SSBO.
+    static int on = -1;
+    if (on < 0) on = ENV("LARECOMP_TURNIP_DMABUF_SYNC") && atoi(ENV("LARECOMP_TURNIP_DMABUF_SYNC"));
+    if (!on || !tw_ready) return;
     for (int i = 0; i < tw_n; i++) {
         if (tw_fd[i] < 0) continue;
-        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW};
+        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE};
         if (ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync) && errno != ENOTTY && errno != EINVAL) {
             static int nlog;
             if (nlog++ < 5) LOG("[vk] turnip window: DMA_BUF_IOCTL_SYNC failed (%s)\n", strerror(errno));
@@ -5287,9 +5289,8 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
 
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    // Prefer HOST_CACHED|COHERENT (Android Adreno / Thor log 8066: head + visible body). Uncached (5bb2) kept
-    // the same host-VB traffic but the body vanished. Rainbow on cached was from missing DMA_BUF_IOCTL_SYNC
-    // (mmap bypasses vkMapMemory coherency) — tw_dma_sync_for_gpu fixes that. LARECOMP_TURNIP_UNCACHED=1: debug.
+    // Prefer HOST_CACHED|COHERENT (8066: head + visible body). Uncached (5bb2) hid the body.
+    // LARECOMP_TURNIP_UNCACHED=1: debug.
     bool want_uncached = ENV("LARECOMP_TURNIP_UNCACHED") && atoi(ENV("LARECOMP_TURNIP_UNCACHED"));
     const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (uint64_t off = 0; off < span; off += TW_PIECE) {
@@ -5383,12 +5384,7 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     tw_base = base;
     tw_span = span;
     tw_ready = true;
-    {
-        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW};
-        for (int i = 0; i < tw_n; i++)
-            if (tw_fd[i] >= 0) ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync);
-    }
-    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU (DMA_BUF sync on)\n", tw_n,
+    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU\n", tw_n,
         (unsigned long long)(span >> 20), (unsigned long long)base);
     pthread_mutex_unlock(&tw_lock);
     return true;
@@ -9263,6 +9259,16 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
+    // Index scan first when deferred: xm_lookup needs the *used* byte count, not the whole mesh pool
+    // (v.size can be 100MB+). Full-pool lookups miss the 128MB XFB mirror → body bound gmem and vanished;
+    // head used tight XFB ranges and hit the mirror.
+    if (scan_src) {
+        if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
+        else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
+        max_index += 1;
+        if (base_vertex > 0) max_index += (uint32_t)base_vertex;
+        scan_src = NULL;
+    }
     RdRec rd = {0};  // (the streams read in place: vk_read_explain above)
     for (int s = 0; s < 17; s++) {
         if (!(vl.used_streams & (1u << s))) continue;
@@ -9274,20 +9280,21 @@ static void draw_(CmdRec *r, bool indexed) {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
             VkDeviceSize doff;
-            if (v.addr && v.size && guest_direct(0, v.addr, v.size, &dbuf, &doff)) {
+            uint64_t stride0 = vl.stride[s], look = v.size;
+            if (v.addr && v.size && stride0 && !vl.divisor[s] && max_index) {
+                look = (uint64_t)max_index * stride0 + 256;
+                if (look > v.size) look = v.size;
+            } else if (v.addr && v.size && stride0 && vl.divisor[s] && !g_ind_gpu) {
+                look = ((uint64_t)base_inst + inst) * stride0 + 256;
+                if (look > v.size) look = v.size;
+            }
+            if (v.addr && look && guest_direct(0, v.addr, look, &dbuf, &doff)) {
                 if (rd.n < RD_STREAMS && !vl.divisor[s] && vl.stride[s])
-                    rd.s[rd.n++] = (RdStream){(uint64_t)(uintptr_t)dbuf, doff, v.size, vl.stride[s], (uint8_t)s, dbuf == gmem_buf};
+                    rd.s[rd.n++] = (RdStream){(uint64_t)(uintptr_t)dbuf, doff, look, vl.stride[s], (uint8_t)s, dbuf == gmem_buf};
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
                 ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
                 rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                 continue;
-            }
-            if (scan_src) {  // copying after all: the index scan bounds the copy
-                if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
-                else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
-                max_index += 1;
-                if (base_vertex > 0) max_index += (uint32_t)base_vertex;
-                scan_src = NULL;
             }
             uint64_t stride = vl.stride[s], need;
             if (!stride) need = 256;

@@ -80,18 +80,17 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top 2048 MB** of Z-A’s guest phys window via **HOST_CACHED** dma-buf pieces + a sparse buffer, set up at `gwin_pick`, with the **XFB mirror on**, and calls **`DMA_BUF_IOCTL_SYNC`** before each GPU submit (CPU wrote the map via `mmap`, not `vkMapMemory`).
+Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, **XFB mirror on**, and looks up XFB VBs by **draw size** (not the whole mesh pool).
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
 | Mirror **off** | Nothing |
-| Whole 3285 MB window | Head only |
-| Force-copy gmem VBs | Head only (`host` → 0) |
-| Top window + **uncached** + direct VBs (5bb2) | Head only (same host traffic, body gone) |
-| Top window + **cached** + direct VBs, no dma-buf sync (8066) | Head + rainbow body |
-| Top window + **cached** + direct VBs + **DMA_BUF sync** | Target path |
+| `guest_direct` with full `v.size` (100MB+ pools) | Body misses 128MB XFB mirror → gmem path |
+| Whole-window `DMA_BUF_SYNC_END\|RW` before submit (b746) | Head only (clobbered skinned pages) |
+| Top ~1600 MB cached, no sync, full-pool lookup (8066) | Head + rainbow body |
+| Top ~1600 MB cached + **draw-sized** `xm_lookup` | Target path |
 
 ### Fix (needs rebuild)
 
@@ -105,23 +104,22 @@ tools/za/fix-graphics-armada.sh
 Good log lines:
 
 ```
-[vk] turnip window: sharing top 2048 MB …
+[vk] turnip window: sharing top 1600 MB …
 [vk] turnip window: memory type … (cached)
-[vk] turnip window: … shared with the GPU (DMA_BUF sync on)
 [vk] transform feedback mirror on (Adreno/Turnip Linux …)
 ```
 
-Creator frames must show **non-zero `host`** vertices.
+Creator frames should show **more `cached`** vertices (body on the XFB mirror), not only `host`.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
 | `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Linux Turnip |
-| `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body on Thor) |
+| `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body) |
+| `LARECOMP_TURNIP_DMABUF_SYNC=1` | Pre-submit dma-buf sync (hid body — debug) |
 | `LARECOMP_TURNIP_GMEM_VB=0` | Force VB copy (hides body) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
-| `LARECOMP_TURNIP_WINDOW_MB=1600` | Smaller top window if allocate fails |
 
 ### Gamescope HDR
 

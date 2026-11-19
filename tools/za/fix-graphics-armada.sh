@@ -4,8 +4,8 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target path: top 2048 MB HOST_CACHED dma-buf + DMA_BUF_IOCTL_SYNC before submit
-#              + XFB mirror ON + direct gmem VBs.
+# Target: ~1600 MB cached dma-buf (8066), XFB mirror ON, direct gmem VBs,
+#         xm_lookup by draw size (not whole mesh pool). No whole-window DMA_BUF sync.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -49,8 +49,7 @@ echo
 echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
 echo "Good log lines:"
-echo "  [vk] turnip window: sharing top … MB …"
+echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
-echo "  [vk] turnip window: … shared with the GPU (DMA_BUF sync on)"
-echo "  [vk] transform feedback mirror on (Adreno/Turnip Linux …)"
-echo "  vertices … cached … host   ← host must be non-zero"
+echo "  [vk] transform feedback mirror on …"
+echo "  creator frames: higher 'cached' vertices (body on XFB mirror), not only host"
