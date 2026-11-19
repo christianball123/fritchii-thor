@@ -20,7 +20,7 @@ Source export: `claude-memory-2026-11-18`.
 - [better-gh3](areas/better-gh3.md) — Working with Better GH3 (Guitar Hero 3 mod) and adding custom songs
 - [botw-armada](areas/botw-armada.md) — Breath of the Wild recomp on ArmadaOS on the AYN Thor: Linux arm64 build of mamcjr/BOTWRecompAndroid, 1.8.2, Linkle mods
 - [crashott-armada](areas/crashott-armada.md) — Getting crashott-pc (Crash of the Titans Xbox 360 recomp, VitoMiguelF/crashott-pc) running on ArmadaOS on the AYN Thor via an arm64 AppImage
-- [eden-custom-armada](areas/eden-custom-armada.md) — User's custom Eden (Switch emulator) aarch64 AppImage for ArmadaOS on the AYN Thor, kept updated to new Eden nightlies
+- [eden-custom-armada](areas/eden-custom-armada.md) — Custom Fritchii/Duo aarch64 AppImage for ArmadaOS on the AYN Thor; current baseline is Drive Fritchii v6.2 Thor AppImage in Project store `docs/fritchii-duo-newest/`
 - [eglantine-armada](areas/eglantine-armada.md) — Running Eglantine (Switch 2 emulator, Eden fork; zortos293/Eglantine) via AppImage on CachyOS and on ArmadaOS on the AYN Thor
 - [eidos-armada](areas/eidos-armada.md) — Wants an arm64 build of eidos (Pokemon Black/White native PC port, Project-Holon/eidos) and its launcher for ArmadaOS on the AYN Thor
 - [grr-pc-armada](areas/grr-pc-armada.md) — Wants the Gravity Rush Remastered PC port (rodrigojacarei/grr_pc, PS4 CUSA01130) running on ArmadaOS on the AYN Thor
