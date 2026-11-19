@@ -62,4 +62,4 @@ if [ "$PGO" = "1" ]; then
 fi
 
 cmake -S . -B "$BUILD_DIR" -G Ninja "${flags[@]}"
-echo "Configured $BUILD_DIR. Build with: cmake --build $BUILD_DIR --target eden eden-cli"
+echo "Configured $BUILD_DIR. Build with: cmake --build $BUILD_DIR --parallel   # Linux GUI binary: bin/lichii"
