@@ -27,10 +27,26 @@ inline constexpr std::size_t kDuoBottomMapBytes =
 //   0x08 u32 parent_pid
 //   0x0c u32 helper_pid
 //   0x20 u32 present_state (3 while showing)
-//   0x68 u64 seq
+//   0x28 u32 touch_seq          (helper → parent)
+//   0x2c u32 touch_count        (0..kDuoBottomMaxTouch)
+//   0x30 DuoBottomTouchPoint[4] (64 bytes)
+//   0x68 u64 seq                (parent → helper frame)
 //   0x70 u32 width
 //   0x74 u32 height
 //   0x7c … RGBA8 pixels (stride = width*4)
+
+inline constexpr std::size_t kDuoBottomTouchSeqOff = 0x28;
+inline constexpr std::size_t kDuoBottomTouchCountOff = 0x2c;
+inline constexpr std::size_t kDuoBottomTouchPointsOff = 0x30;
+inline constexpr std::uint32_t kDuoBottomMaxTouch = 4;
+
+struct DuoBottomTouchPoint {
+    std::uint32_t finger_id;
+    std::uint32_t x;
+    std::uint32_t y;
+    std::uint32_t attributes; // bit0=start, bit1=end
+};
+static_assert(sizeof(DuoBottomTouchPoint) == 16);
 
 inline void DuoBottomWriteU32(void* base, std::size_t off, std::uint32_t v) {
     *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(base) + off) = v;

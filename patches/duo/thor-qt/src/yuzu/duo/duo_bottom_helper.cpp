@@ -8,6 +8,7 @@
 
 #include "yuzu/duo/duo_bottom_shared.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -345,12 +346,48 @@ int RunBottomHelperMain(const char* shared_path) {
     std::uint64_t last_seq = 0;
     std::uint32_t pictures = 0;
     std::uint32_t claim_tick = 0;
+    bool mouse_down = false;
+    float mouse_x = 0, mouse_y = 0;
+
+    const auto publish_touch = [&](bool down, bool started) {
+        auto* pts = reinterpret_cast<DuoBottomTouchPoint*>(static_cast<std::uint8_t*>(map) +
+                                                           kDuoBottomTouchPointsOff);
+        if (!down) {
+            DuoBottomWriteU32(map, kDuoBottomTouchCountOff, 0);
+            DuoBottomWriteU32(map, kDuoBottomTouchSeqOff,
+                              DuoBottomReadU32(map, kDuoBottomTouchSeqOff) + 1);
+            return;
+        }
+        int pw = 1, ph = 1;
+        SDL_GetWindowSizeInPixels(window, &pw, &ph);
+        const std::uint32_t cw = DuoBottomReadU32(map, 0x70);
+        const std::uint32_t ch = DuoBottomReadU32(map, 0x74);
+        std::uint32_t tx = static_cast<std::uint32_t>(std::max(0.0f, mouse_x));
+        std::uint32_t ty = static_cast<std::uint32_t>(std::max(0.0f, mouse_y));
+        if (cw > 0 && ch > 0 && pw > 0 && ph > 0) {
+            tx = static_cast<std::uint32_t>(mouse_x * static_cast<float>(cw) /
+                                           static_cast<float>(pw));
+            ty = static_cast<std::uint32_t>(mouse_y * static_cast<float>(ch) /
+                                           static_cast<float>(ph));
+            if (tx >= cw) {
+                tx = cw - 1;
+            }
+            if (ty >= ch) {
+                ty = ch - 1;
+            }
+        }
+        pts[0] = DuoBottomTouchPoint{0, tx, ty, started ? 1u : 0u};
+        DuoBottomWriteU32(map, kDuoBottomTouchCountOff, 1);
+        DuoBottomWriteU32(map, kDuoBottomTouchSeqOff,
+                          DuoBottomReadU32(map, kDuoBottomTouchSeqOff) + 1);
+    };
 
     while (!g_helper_stop.load(std::memory_order_relaxed)) {
         if (access(shared_path, R_OK) != 0) {
             break;
         }
 
+        bool drew = false;
         if (DuoBottomHeaderOk(map)) {
             const std::uint64_t seq = DuoBottomReadU64(map, 0x68);
             if (seq != last_seq) {
@@ -377,21 +414,65 @@ int RunBottomHelperMain(const char* shared_path) {
                     DuoBottomWriteU32(map, 0x20, 3);
                     last_seq = seq;
                     ++pictures;
+                    drew = true;
                 }
             }
         }
 
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_EVENT_QUIT) {
+            switch (ev.type) {
+            case SDL_EVENT_QUIT:
                 g_helper_stop.store(true);
+                break;
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_MOTION:
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_CANCELED: {
+                int pw = 1, ph = 1;
+                SDL_GetWindowSizeInPixels(window, &pw, &ph);
+                mouse_x = ev.tfinger.x * static_cast<float>(pw);
+                mouse_y = ev.tfinger.y * static_cast<float>(ph);
+                const bool down =
+                    ev.type == SDL_EVENT_FINGER_DOWN || ev.type == SDL_EVENT_FINGER_MOTION;
+                publish_touch(down, ev.type == SDL_EVENT_FINGER_DOWN);
+                break;
+            }
+            case SDL_EVENT_MOUSE_MOTION:
+                if (ev.motion.which == SDL_TOUCH_MOUSEID) {
+                    break;
+                }
+                mouse_x = ev.motion.x;
+                mouse_y = ev.motion.y;
+                if (mouse_down) {
+                    publish_touch(true, false);
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (ev.button.which == SDL_TOUCH_MOUSEID || ev.button.button != SDL_BUTTON_LEFT) {
+                    break;
+                }
+                mouse_down = true;
+                mouse_x = ev.button.x;
+                mouse_y = ev.button.y;
+                publish_touch(true, true);
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (ev.button.which == SDL_TOUCH_MOUSEID || ev.button.button != SDL_BUTTON_LEFT) {
+                    break;
+                }
+                mouse_down = false;
+                publish_touch(false, false);
+                break;
+            default:
+                break;
             }
         }
 
-        if (have_x11 && (++claim_tick % 45) == 0) {
+        if (have_x11 && (++claim_tick % 120) == 0) {
             ClaimBottomScreen(x11, window);
         }
-        SDL_Delay(8);
+        SDL_Delay(drew ? 8 : 16);
     }
 
     munmap(map, kDuoBottomMapBytes);
@@ -469,6 +550,8 @@ int MaybeStartThorBottomHelper(const std::string& shared_companion_path) {
     }
     if (pid == 0) {
         setsid();
+        // Steam overlay preload is useless/noisy in the bottom helper and costs startup.
+        unsetenv("LD_PRELOAD");
         // Log child output like Claude's /duo-bottom-runner.log
         const int logfd = open("/tmp/duo-bottom-runner.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (logfd >= 0) {

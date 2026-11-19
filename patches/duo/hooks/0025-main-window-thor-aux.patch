@@ -19,7 +19,7 @@
 +        duo_bottom_timer = new QTimer(qApp);
 +        QObject::connect(duo_bottom_timer, &QTimer::timeout,
 +                         [] { DuoQt::PumpThorBottomBridge(*QtCommon::system); });
-+        duo_bottom_timer->start(8);
++        duo_bottom_timer->start(16);
 +    }
      QtCommon::emu_thread->start();
  

@@ -6,10 +6,12 @@
 #include "yuzu/duo/duo_bottom_helper.h"
 #include "yuzu/duo/duo_bottom_shared.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -185,6 +187,33 @@ void PumpThorBottomBridge(Core::System& system) {
     }
 
     auto& aux = system.GPU().DSModAux();
+
+    // Helper → parent touch (always, even when UI is idle).
+    static u32 last_touch_seq = 0;
+    const u32 touch_seq = DuoBottomReadU32(g_map, kDuoBottomTouchSeqOff);
+    if (touch_seq != last_touch_seq) {
+        last_touch_seq = touch_seq;
+        const u32 count = std::min(DuoBottomReadU32(g_map, kDuoBottomTouchCountOff),
+                                   kDuoBottomMaxTouch);
+        if (count == 0) {
+            aux.SetTouch({});
+        } else {
+            const auto* pts = reinterpret_cast<const DuoBottomTouchPoint*>(
+                static_cast<const std::uint8_t*>(g_map) + kDuoBottomTouchPointsOff);
+            VideoCore::DSMod::AuxTouchPoint out[kDuoBottomMaxTouch]{};
+            for (u32 i = 0; i < count; ++i) {
+                out[i] = VideoCore::DSMod::AuxTouchPoint{
+                    .finger_id = pts[i].finger_id,
+                    .x = pts[i].x,
+                    .y = pts[i].y,
+                    .attributes = pts[i].attributes,
+                    .delta_ns = 0,
+                };
+            }
+            aux.SetTouch(std::span{out, count});
+        }
+    }
+
     if (!aux.HasUi()) {
         return;
     }
