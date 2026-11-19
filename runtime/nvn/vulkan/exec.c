@@ -6410,17 +6410,19 @@ static bool xm_on(void) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
         // Auto-off on AMD: the mirror ends the render pass ~110 times a frame.
-        // Adreno (Android AHB and Linux Turnip dma-buf): off — XFB writes the shared heap in place. A partial
-        // window with mirror off used to collapse the creator to a solid block; with the whole window shared
-        // (Android's layout) mirror stays off. LARECOMP_VK_XFB_MIRROR=1 / F1 Compatibility to force on.
-        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
+        // Android Adreno: off (AHB — XFB writes the shared heap in place).
+        // Linux Turnip: Auto = ON. Even with the whole phys window shared as cached dma-buf, mirror off
+        // made the creator head+body vanish (d0e8); mirror on is what kept the head visible before.
+        // LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to force off.
+        bool auto_off = g_vk.props.vendorID == 0x1002;
+#ifdef __ANDROID__
+        auto_off = auto_off || g_vk.props.vendorID == 0x5143;
+#endif
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF ? "F1 > Compatibility"
-                           : g_vk.props.vendorID == 0x5143 ? "Adreno/Turnip shared window"
-                                                           : "this AMD GPU, F1 > Compatibility to turn it on");
+                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (forced via F1 > Compatibility; LARECOMP_VK_XFB_MIRROR=0 for Android-like off)\n");
+            LOG("[vk] transform feedback mirror on (Adreno/Turnip Linux; LARECOMP_VK_XFB_MIRROR=0 / F1 Compatibility to turn off)\n");
     }
 #if defined(__linux__) && !defined(__ANDROID__)
     return on && (g_vk.host_import || tw_ready);
