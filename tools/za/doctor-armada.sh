@@ -24,8 +24,14 @@ check "lasrecomp" "$B/lasrecomp" || fail=1
 check "lasgen wrapper" "$B/lasgen/lasgen" || fail=1
 check "zig" "$B/zig/zig" || fail=1
 check "gamelib-src/cpu.h" "$B/gamelib-src/cpu.h" || fail=1
-check "DejaVuSans.ttf (substitute font)" "$B/DejaVuSans.ttf" || fail=1
-check "BIZUDPGothic (substitute font)" "$B/BIZUDPGothic-Regular.ttf" || fail=1
+if ! check "DejaVuSans.ttf (substitute font)" "$B/DejaVuSans.ttf"; then
+    fail=1
+    echo "    fix: tools/za/fix-fonts-armada.sh"
+fi
+if ! check "BIZUDPGothic (substitute font)" "$B/BIZUDPGothic-Regular.ttf"; then
+    fail=1
+    echo "    fix: tools/za/fix-fonts-armada.sh"
+fi
 check "tools/venv" "tools/venv/bin/python" || fail=1
 check "tools/gen.py" "tools/gen.py" || fail=1
 echo

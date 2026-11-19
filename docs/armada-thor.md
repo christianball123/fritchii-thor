@@ -78,18 +78,41 @@ Armada’s root filesystem is **immutable** (Fedora bootc). Install build deps w
 
 Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux).
 
-## Fonts (“needs Switch fonts”)
+## Fonts (“No font for the game's text”)
 
-Nintendo’s shared fonts are **not** in the game dump and are **not** required to play. The build places substitute fonts (`DejaVuSans.ttf`, `BIZUDPGothic-Regular.ttf`) next to `lasrecomp`. Re-run:
+That dialog means the runtime found **neither** Switch fonts nor the bundled substitute (`DejaVuSans.ttf` / `BIZUDPGothic`). Nintendo fonts are **not** required to play.
+
+### Fix without rebuilding (current binary)
+
+From the repo (after `git pull`):
 
 ```bash
-tools/za/prepare-gamebuild.sh
-# or: tools/za/build-armada.sh
+tools/za/fix-fonts-armada.sh
+# or point at your binary:
+# tools/za/fix-fonts-armada.sh /path/to/lasrecomp
 ```
 
-If you still see a font error, you’re likely launching a copy of the binary without those `.ttf` files beside it — run the one under `build/linux/aarch64/za/`.
+That copies the substitute fonts next to `lasrecomp` and into `~/.local/share/zarecomp/`. Then launch the **same** binary again.
 
-Optional original Switch look: **Settings → Files → Import fonts**, and pick files from your own firmware dump (names like `nintendo_udsg-r_std_003.bfttf`, `nintendo_ext_003.bfttf`). They are copied into `~/.local/share/zarecomp/fonts/` and used on the next game start. You can keep using **Use substitute font** instead.
+One-shot override (no copy):
+
+```bash
+LARECOMP_FONT="$PWD/third_party/fonts/DejaVu/DejaVuSans.ttf" \
+  ./build/linux/aarch64/za/lasrecomp
+```
+
+Optional: layer the system package (reboot required on rpm-ostree):
+
+```bash
+sudo rpm-ostree install --allow-inactive dejavu-sans-fonts
+sudo systemctl reboot
+```
+
+### After the next rebuild
+
+`prepare-gamebuild.sh` / `build-armada.sh` also place those `.ttf` files next to `lasrecomp`. Prefer that binary under `build/linux/aarch64/za/`.
+
+Optional original Switch look: **Settings → Files → Import fonts**, and pick files from your own firmware dump (`nintendo_udsg-r_std_003.bfttf`, `nintendo_ext_003.bfttf`). They land in `~/.local/share/zarecomp/fonts/`.
 
 ## Suggested first-run settings (F1)
 

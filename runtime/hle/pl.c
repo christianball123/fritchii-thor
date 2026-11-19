@@ -234,10 +234,11 @@ static void load_fonts(void) {
                                      "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc", "C:/Windows/Fonts/YuGothR.ttc",
                                      "C:/Windows/Fonts/YuGothM.ttc",
                                      "/System/Library/Fonts/Supplemental/Arial.ttf", "C:/Windows/Fonts/arial.ttf",
-                                     // Linux: DejaVu Sans (Debian / Ubuntu, Arch, Fedora). Not Noto Sans CJK: CFF
-                                     // outlines, which the game's font engine crashes on (it wants TrueType)
+                                     // Linux: DejaVu Sans (Debian / Ubuntu, Arch, Fedora / Armada). Not Noto Sans
+                                     // CJK: CFF outlines, which the game's font engine crashes on (it wants TrueType)
                                      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                                      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                     "/usr/share/fonts/dejavu/DejaVuSans.ttf",  // Fedora / Armada OS (rpm dejavu-sans-fonts)
                                      "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", NULL};
     static const char *const zh_cn[] = {"fonts/nintendo_udsg-r_org_zh-cn_003.bfttf",
                                         "fonts/nintendo_udsg-r_org_zh-cn_003.ttf",
@@ -330,6 +331,10 @@ static void load_fonts(void) {
     }
     if (!fonts[F_STD].addr && rt_resource("DejaVuSans.ttf", "third_party/fonts/DejaVu/DejaVuSans.ttf", bundled, sizeof bundled))
         load_one_checked(bundled, &fonts[F_STD], true);
+    // Data root (cwd after rt_paths_init): tools/za/fix-fonts-armada.sh seeds DejaVuSans.ttf here so a launch
+    // whose binary folder has no sibling fonts still boots on Fedora Atomic / Armada Game Mode shortcuts.
+    if (!fonts[F_STD].addr) load_one_checked("DejaVuSans.ttf", &fonts[F_STD], true);
+    if (!fonts[F_STD].addr) load_one_checked("BIZUDPGothic-Regular.ttf", &fonts[F_STD], true);
     if (!fonts[F_STD].addr)  // (only a broken install: the app ships DejaVu Sans)
         FATAL("no font for the game's text: import the Switch fonts in Settings (Game font), or reinstall %s\n",
               g_game_is_la ? "LAS Recomp" : "ZA Recomp");
