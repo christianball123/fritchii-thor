@@ -28,7 +28,10 @@ done
 MAIN_BIN=eden
 if [ "$1" = "--cli" ]; then
     shift
-    exec "$HERE/usr/bin/eden-cli" "$@"
+    if [ -x "$HERE/usr/bin/eden-cli" ]; then
+        exec "$HERE/usr/bin/eden-cli" "$@"
+    fi
+    # fritchii-v6.1 ships GUI-only on Linux; fall through to the Qt binary.
 fi
 if [ -x "$HERE/usr/bin/${0##*/}" ] && [ "${0##*/}" != "AppRun" ]; then
     exec "$HERE/usr/bin/${0##*/}" "$@"

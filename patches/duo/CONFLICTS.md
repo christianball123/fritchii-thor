@@ -81,3 +81,7 @@ against fritchii-v6.1.
 - Hook 0021: guard nvhost_gpu.cpp immintrin/_mm_prefetch for aarch64 (stock Fritchii v6.1).
 
 - Hook 0022: known_issues IntelCpu guards cpu_string for aarch64 stub CPUCaps.
+
+- apply.sh: tree/ wins over thor-qt (QLatin1Char must survive).
+- Packaging: Fritchii Linux GUI is lichii; eden-cli optional.
+- CI: ccache restore/save; ninja -k 0; QChar guard after apply.

@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: fritchii-thor-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -54,6 +54,11 @@ jobs:
           set -euo pipefail
           chmod +x memvault/patches/duo/scripts/apply.sh
           memvault/patches/duo/scripts/apply.sh "$GITHUB_WORKSPACE/Fritchii"
+          # Guard: thor-qt must not reintroduce Qt6-deleted QChar(char).
+          if grep -RIn --include='*.cpp' "QChar('/')" Fritchii/src/yuzu/duo >/dev/null 2>&1; then
+            echo "::error::Duo Qt still uses QChar('/') after apply — tree/ must win over thor-qt"
+            exit 1
+          fi
 
       - name: Install Linux dependencies
         shell: bash
@@ -82,6 +87,14 @@ jobs:
           modules: qtcharts
           cache: true
 
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-thor-aarch64-${{ github.sha }}
+          restore-keys: |
+            ccache-thor-aarch64-
+
       - name: Configure Thor build
         working-directory: Fritchii
         shell: bash
@@ -97,13 +110,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build/release --parallel "$(nproc)"
-          # Prefer eden naming; fall back to yuzu target names.
-          if [ -x build/release/bin/eden ]; then
-            test -x build/release/bin/eden-cli || test -x build/release/bin/yuzu-cmd
-          else
-            test -x build/release/bin/yuzu
-          fi
+          # -k 0 keeps going so one TU doesn't hide siblings; still fails the step.
+          cmake --build build/release --parallel "$(nproc)" -- -k 0
+          ccache -s || true
+          test -x build/release/bin/lichii
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-thor-aarch64-${{ github.sha }}-${{ github.run_id }}
 
       - name: Package AppImage
         working-directory: Fritchii

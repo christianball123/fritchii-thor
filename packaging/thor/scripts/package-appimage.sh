@@ -11,13 +11,19 @@ OUT_NAME="${OUT_NAME:-Fritchii-Thor-aarch64.AppImage}"
 ARCH="$(uname -m)"
 OUT_DIR="${OUT_DIR:-$FRITCHII}"
 
-GUI_BIN=eden
-CLI_BIN=eden-cli
-if [ ! -x "$BUILD_DIR/bin/eden" ] && [ -x "$BUILD_DIR/bin/yuzu" ]; then GUI_BIN=yuzu; fi
-if [ ! -x "$BUILD_DIR/bin/eden-cli" ] && [ -x "$BUILD_DIR/bin/yuzu-cmd" ]; then CLI_BIN=yuzu-cmd; fi
-test -x "$BUILD_DIR/bin/$GUI_BIN"
-test -x "$BUILD_DIR/bin/$CLI_BIN"
-strip "$BUILD_DIR/bin/$GUI_BIN" "$BUILD_DIR/bin/$CLI_BIN" || true
+# Fritchii v6.1 Linux GUI is bin/lichii (CMake OUTPUT_NAME). Older trees used eden/yuzu.
+GUI_BIN=""
+for cand in lichii eden yuzu fritchii; do
+  if [ -x "$BUILD_DIR/bin/$cand" ]; then GUI_BIN=$cand; break; fi
+done
+test -n "$GUI_BIN" && test -x "$BUILD_DIR/bin/$GUI_BIN"
+
+# fritchii-v6.1 has no yuzu_cmd / eden-cli target; CLI is optional (--cli in AppRun).
+CLI_BIN=""
+for cand in eden-cli yuzu-cmd; do
+  if [ -x "$BUILD_DIR/bin/$cand" ]; then CLI_BIN=$cand; break; fi
+done
+strip "$BUILD_DIR/bin/$GUI_BIN" ${CLI_BIN:+"$BUILD_DIR/bin/$CLI_BIN"} || true
 
 tools="${RUNNER_TEMP:-/tmp}/linuxdeploy-thor"
 mkdir -p "$tools"
@@ -40,8 +46,11 @@ rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR/stage-bin" "$WORKDIR/AppDir"
 
 cp -a "$BUILD_DIR/bin/$GUI_BIN" "$WORKDIR/stage-bin/eden"
-cp -a "$BUILD_DIR/bin/$CLI_BIN" "$WORKDIR/stage-bin/eden-cli"
-chmod +x "$WORKDIR/stage-bin/eden" "$WORKDIR/stage-bin/eden-cli"
+chmod +x "$WORKDIR/stage-bin/eden"
+if [ -n "$CLI_BIN" ]; then
+  cp -a "$BUILD_DIR/bin/$CLI_BIN" "$WORKDIR/stage-bin/eden-cli"
+  chmod +x "$WORKDIR/stage-bin/eden-cli"
+fi
 
 DESKTOP="$THOR/dev.eden_emu.eden.desktop"
 ICON=""
@@ -69,13 +78,20 @@ for lib in 'libvulkan.so*' 'libudev.so*' 'libsystemd.so*' 'libdbus-1.so*' \
 done
 
 # Populate AppDir without wrapping; we inject Thor hooks next.
-"$tools/linuxdeploy-$ARCH.AppImage" --appdir "$WORKDIR/AppDir" \
-  --executable "$WORKDIR/stage-bin/eden" \
-  --executable "$WORKDIR/stage-bin/eden-cli" \
-  --desktop-file "$DESKTOP" \
-  --icon-file "$ICON" \
-  --plugin qt \
+deploy=(
+  "$tools/linuxdeploy-$ARCH.AppImage" --appdir "$WORKDIR/AppDir"
+  --executable "$WORKDIR/stage-bin/eden"
+)
+if [ -x "$WORKDIR/stage-bin/eden-cli" ]; then
+  deploy+=(--executable "$WORKDIR/stage-bin/eden-cli")
+fi
+deploy+=(
+  --desktop-file "$DESKTOP"
+  --icon-file "$ICON"
+  --plugin qt
   "${extra[@]}"
+)
+"${deploy[@]}"
 
 APPDIR="$WORKDIR/AppDir"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/duo-modules"

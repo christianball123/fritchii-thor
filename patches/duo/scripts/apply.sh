@@ -24,6 +24,13 @@ if [[ ! -f src/core/core.h || ! -f src/yuzu/main_window.cpp ]]; then
   exit 1
 fi
 
+# thor-qt is a legacy mirror; tree/ is the source of truth (must win last).
+if [[ -d "$ROOT/thor-qt/src/yuzu/duo" ]]; then
+  echo "==> Seeding Thor Qt Duo helpers (overwritten by tree/ next)"
+  mkdir -p src/yuzu/duo
+  cp -a "$ROOT/thor-qt/src/yuzu/duo/." src/yuzu/duo/
+fi
+
 echo "==> Copying Duo-only tree (mods, dsmod, dsm, Thor Qt, …)"
 cp -a "$ROOT/tree/." .
 
@@ -34,11 +41,6 @@ for p in "${HOOKS[@]}"; do
   echo "    $(basename "$p")"
   git apply --whitespace=nowarn "$p"
 done
-
-if [[ -d "$ROOT/thor-qt/src/yuzu/duo" ]]; then
-  mkdir -p src/yuzu/duo
-  cp -a "$ROOT/thor-qt/src/yuzu/duo/." src/yuzu/duo/
-fi
 
 echo "==> Done."
 echo
