@@ -12,7 +12,7 @@ Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 
 |------|--------|
 | Target | AYN Thor (Snapdragon 8 Gen 2, Adreno) on Armada OS; other Armada aarch64 handhelds may work |
 | Build | Native on-device (or any aarch64 Linux with glibc 2.35+, clang, Vulkan 1.3) |
-| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on** (always-inside `xm_buf`; no piece VB), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
+| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on** + full-pool gmem VB (8066 path), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
 | Pages | 4K (Thor) or 16K; **64K page kernels are not supported** |
 | Performance | Handheld settings first (lower internal resolution, 30 fps) |
 
@@ -80,16 +80,16 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** of Z-A’s guest window as **128 MB dma-buf pieces** (shader storage + index binds) and keeps a **device-local XFB mirror**. Skinned vertex streams bind that mirror (`xm_buf`); other vertices are CPU-copied after a dma-buf READ sync. **Piece buffers are not used as vertex buffers** — HOST_CACHED piece XFB→VB stayed body-less (006f).
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** as a dma-buf window (sparse `gmem` + pieces) and keeps a **device-local XFB mirror**. The known-visible Thor creator path (**8066**) is: mirror **on**, **full-pool** vertex binds, **sparse gmem as VB**. Head comes from `xm_buf` when the look fits; body binds gmem (often rainbow-tinted, but present).
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
-| Bind 1600 MB sparse dma-buf as VB | Head OK, body = static noise |
-| Mirror on + piece VB | Head OK, body missing (7447) |
-| Mirror off + XFB through same piece as VB | Still no body (006f) |
-| Mirror on + always-inside `xm_lookup` + CPU-copy verts (no piece VB) | Target |
+| 8066: mirror on + full-pool + sparse gmem VB | Head OK, body visible (rainbow) |
+| Draw-sized / piece VB / CPU-copy | Head-only or empty |
+| always-inside `xm_lookup` | Empty character preview |
+| Mirror off + piece XFB→VB | No body (006f) |
 
 ### Fix (needs rebuild)
 
@@ -103,21 +103,20 @@ tools/za/fix-graphics-armada.sh   # forces gpu_xfb_mirror=on
 Good log lines:
 
 ```
-[vk] turnip window: sharing top 1600 MB …
-[vk] transform feedback mirror on (Armada/Turnip; … always-inside xm_lookup …)
-[vk] Turnip: xm_lookup always-inside mirror …
-[vk] Turnip: vertices from XFB mirror or CPU copy; indices from per-piece dma-buf …
+[vk] transform feedback mirror on (Armada/Turnip; … 8066 full-pool+gmem VB path …)
+[vk] Turnip: full-pool vertex binds (8066 path …)
+[vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066 path …)
 ```
 
-Creator: real body. Expect substantial `cached` (mirror) and `upload` (CPU-copied verts), little `host`.
+Expect `cached` + large `host`. Body may look rainbow until a later coherency fix; empty preview means the wrong path.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off (006f path — no body) |
-| `LARECOMP_TURNIP_GMEM_VB=1` | Bind piece buffers as VB (debug) |
-| `LARECOMP_XM_STRICT=1` | Require written chunks (disable always-inside) |
+| `LARECOMP_XM_DRAW_SIZE=1` | Draw-sized looks (head-only risk) |
+| `LARECOMP_TURNIP_PIECE_VB=1` | Per-piece VB (often invisible body) |
+| `LARECOMP_TURNIP_GMEM_VB=0` | CPU-copy VBs (hid body) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 
 ### Gamescope HDR

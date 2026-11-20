@@ -4,10 +4,9 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: XFB mirror ON + always-inside xm_lookup (device-local xm_buf for skinned
-#         verts). Piece dma-buf is NOT used as a vertex buffer (006f: same-piece
-#         XFB→VB still had no body on HOST_CACHED Turnip memory). Indices may use
-#         pieces; other verts CPU-copied after dma-buf READ sync.
+# Target: restore the 8066 path that showed head + visible (rainbow) body:
+#   XFB mirror ON, full-pool vertex binds, sparse dma-buf gmem as VB/IB.
+#   Later piece/always-inside/CPU-copy experiments went head-only or empty.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -50,15 +49,11 @@ echo "fix-graphics-armada: updated $INI"
 echo
 echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
-echo "Good log lines:"
-echo "  [vk] turnip window: sharing top 1600 MB …"
-echo "  [vk] transform feedback mirror on (Armada/Turnip; … always-inside xm_lookup …)"
-echo "  [vk] Turnip: xm_lookup always-inside mirror …"
-echo "  [vk] Turnip: vertices from XFB mirror or CPU copy; indices from per-piece dma-buf …"
-echo "  creator: real body; expect substantial cached (mirror), upload for CPU-copied verts"
+echo "Good log lines (8066 path):"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; … 8066 full-pool+gmem VB path …)"
+echo "  [vk] Turnip: full-pool vertex binds (8066 path …)"
+echo "  [vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066 path …)"
+echo "  creator: head + visible body (may be rainbow-tinted); cached + large host"
 echo
-echo "Bad (still on the 006f path):"
-echo "  transform feedback mirror off"
-echo "  XFB writes through per-piece dma-buf"
-echo "  vertices 0MB cached … host"
-echo "  → re-run this script (gpu_xfb_mirror=on), rebuild, restart"
+echo "Bad:"
+echo "  always-inside / per-piece VB / CPU copy / 0MB host with empty preview"
