@@ -2,7 +2,7 @@
 
 This fork adds a **native linux-aarch64** path so [ZA Recomp](https://github.com/Hexveil404/PokeZ-ARecomp) can run on **AYN Thor** under **[Armada OS](https://armadaos.dev/)** (Fedora bootc, Mesa **Turnip** / Adreno), without Wine, Proton, or FEX.
 
-Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 Linux request as not planned; the Makefile already knew about aarch64 (from LAS Recomp). This fork wires ZA’s build scripts for native aarch64 and applies **Adreno/Turnip** Vulkan workarounds ported from the unofficial [Android arm64 port](https://github.com/fleckaben/PokeZ-ARecomp/tree/android) (vendor id `0x5143`), without Android-only APIs (no AHardwareBuffer, no guest VA rebase).
+Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 Linux request as not planned; the Makefile already knew about aarch64 (from LAS Recomp). This fork wires ZA’s build scripts for native aarch64 and adds **Mesa Turnip / Adreno** Vulkan paths for Armada (vendor id `0x5143`): dma-buf guest window, XFB mirror, GPU-copied vertex streams — no Android APIs.
 
 > **You need your own copy of the game.** Nothing here includes game files, keys, dumps, or a prebuilt `lasgame.so`.
 
@@ -12,9 +12,9 @@ Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 
 |------|--------|
 | Target | AYN Thor (Snapdragon 8 Gen 2, Adreno) on Armada OS; other Armada aarch64 handhelds may work |
 | Build | Native on-device (or any aarch64 Linux with glibc 2.35+, clang, Vulkan 1.3) |
-| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, XFB mirror off, D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
+| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on**, D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
 | Pages | 4K (Thor) or 16K; **64K page kernels are not supported** |
-| Performance | Untested on Thor hardware in this fork. Expect handheld settings (lower internal resolution, 30 fps). Odin 3 Android builds reported ~30 fps in the city |
+| Performance | Handheld settings first (lower internal resolution, 30 fps) |
 
 Do **not** run the x86_64 AppImage under FEX for this title if you can avoid it: the game code is heavy SIMD and will be much slower than a native aarch64 build.
 
@@ -80,17 +80,16 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Linux **does not** expose `VK_EXT_external_memory_host`. Android uses AHardwareBuffer for the same job. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, **XFB mirror on**, and looks up XFB VBs by **draw size** (not the whole mesh pool).
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, keeps a **256 MB device-local XFB mirror**, looks up skinned VBs by **draw size**, and **GPU-copies** any remaining gmem vertex/index streams into the transient ring (never binds the dma-buf itself as a VB — that left the body missing on Thor).
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
 | Mirror **off** | Nothing |
-| `guest_direct` with full `v.size` (100MB+ pools) | Body misses 128MB XFB mirror → gmem path |
-| Whole-window `DMA_BUF_SYNC_END\|RW` before submit (b746) | Head only (clobbered skinned pages) |
-| Top ~1600 MB cached, no sync, full-pool lookup (8066) | Head + rainbow body |
-| Top ~1600 MB cached + **draw-sized** `xm_lookup` | Target path |
+| Bind dma-buf as VB + 128 MB mirror | Head only / rainbow body |
+| Whole-window `DMA_BUF_SYNC` before submit | Head only (clobbered skinned pages) |
+| ~1600 MB cached + mirror + **GPU VB copy** + 256 MB mirror | Target path |
 
 ### Fix (needs rebuild)
 
@@ -106,19 +105,20 @@ Good log lines:
 ```
 [vk] turnip window: sharing top 1600 MB …
 [vk] turnip window: memory type … (cached)
-[vk] transform feedback mirror on (Adreno/Turnip Linux …)
+[vk] transform feedback mirror on (Armada/Turnip; 256 MB …)
+[vk] Turnip: gmem vertex/index streams GPU-copied to transient ring …
 ```
 
-Creator frames should show **more `cached`** vertices (body on the XFB mirror), not only `host`.
+Creator frames should show **more `cached`** vertices (mirror + GPU-copied streams), not large `host` dma-buf binds.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Linux Turnip |
+| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Turnip |
 | `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body) |
 | `LARECOMP_TURNIP_DMABUF_SYNC=1` | Pre-submit dma-buf sync (hid body — debug) |
-| `LARECOMP_TURNIP_GMEM_VB=0` | Force VB copy (hides body) |
+| `LARECOMP_TURNIP_GMEM_VB=1` | Bind dma-buf as VB again (debug; default is GPU copy) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 
 ### Gamescope HDR
@@ -175,7 +175,7 @@ Useful env overrides (optional):
 
 ```bash
 export LARECOMP_SHADER_QUAD_CONTROL=1
-export LARECOMP_VK_XFB_MIRROR=0
+# leave XFB mirror on (default on Turnip) — =0 hides the character
 export LARECOMP_VK_D24=1
 ```
 

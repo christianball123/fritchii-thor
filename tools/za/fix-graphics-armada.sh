@@ -4,8 +4,8 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: ~1600 MB cached dma-buf (8066), XFB mirror ON, direct gmem VBs,
-#         xm_lookup by draw size (not whole mesh pool). No whole-window DMA_BUF sync.
+# Target: ~1600 MB cached dma-buf, XFB mirror ON (256 MB), draw-sized xm_lookup,
+#         GPU-copy remaining gmem VBs into the ring (do not bind dma-buf as VB).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -51,5 +51,6 @@ echo
 echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
-echo "  [vk] transform feedback mirror on …"
-echo "  creator frames: higher 'cached' vertices (body on XFB mirror), not only host"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; 256 MB …)"
+echo "  [vk] Turnip: gmem … GPU-copied to transient ring …"
+echo "  creator frames: higher 'cached' vertices (mirror + GPU copy), not dma-buf host binds"
