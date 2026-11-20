@@ -12,7 +12,7 @@ Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 
 |------|--------|
 | Target | AYN Thor (Snapdragon 8 Gen 2, Adreno) on Armada OS; other Armada aarch64 handhelds may work |
 | Build | Native on-device (or any aarch64 Linux with glibc 2.35+, clang, Vulkan 1.3) |
-| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on** + full-pool gmem VB (8066 path), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
+| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on** + draw-sized xm + CPU VB copy (no sparse gmem VB), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
 | Pages | 4K (Thor) or 16K; **64K page kernels are not supported** |
 | Performance | Handheld settings first (lower internal resolution, 30 fps) |
 
@@ -80,16 +80,15 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** as a dma-buf window (sparse `gmem` + pieces) and keeps a **device-local XFB mirror**. The known-visible Thor creator path (**8066**) is: mirror **on**, **full-pool** vertex binds, **sparse gmem as VB**. Head comes from `xm_buf` when the look fits; body binds gmem (often rainbow-tinted, but present).
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** as a dma-buf window (shader storage) and keeps a **device-local XFB mirror**. Vertex streams: skinned draws bind `xm_buf` (draw-sized + any-chunk lookup); everything else is **CPU-copied** after a dma-buf READ sync. Binding sparse/piece dma-buf as a VB caused **city background flicker** (green strips) and rainbow character body.
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
-| 8066: mirror on + full-pool + sparse gmem VB | Head OK, body visible (rainbow) |
-| Draw-sized / piece VB / CPU-copy | Head-only or empty |
+| Sparse gmem as VB (8066) | Body visible but rainbow; city buildings flicker green |
 | always-inside `xm_lookup` | Empty character preview |
-| Mirror off + piece XFB→VB | No body (006f) |
+| Draw-sized xm + CPU-copy VBs | Stable backgrounds; skinned meshes from mirror |
 
 ### Fix (needs rebuild)
 
@@ -103,20 +102,20 @@ tools/za/fix-graphics-armada.sh   # forces gpu_xfb_mirror=on
 Good log lines:
 
 ```
-[vk] transform feedback mirror on (Armada/Turnip; … 8066 full-pool+gmem VB path …)
-[vk] Turnip: full-pool vertex binds (8066 path …)
-[vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066 path …)
+[vk] transform feedback mirror on (Armada/Turnip; … draw-sized + CPU VB copy …)
+[vk] Turnip: draw-sized vertex looks …
+[vk] Turnip: vertices/indices CPU-copied to ring after dma-buf READ sync …
 ```
 
-Expect `cached` + large `host`. Body may look rainbow until a later coherency fix; empty preview means the wrong path.
+City streets should no longer strobe green on building facades. Expect `cached` (skin) + `upload` (CPU copies), not large `host` dma-buf VB binds.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_XM_DRAW_SIZE=1` | Draw-sized looks (head-only risk) |
-| `LARECOMP_TURNIP_PIECE_VB=1` | Per-piece VB (often invisible body) |
-| `LARECOMP_TURNIP_GMEM_VB=0` | CPU-copy VBs (hid body) |
+| `LARECOMP_TURNIP_GMEM_VB=1` | Sparse gmem VB (8066 — flicker / rainbow) |
+| `LARECOMP_XM_FULL_POOL=1` | Full-pool looks (debug) |
+| `LARECOMP_XM_STRICT=1` | All-chunks xm only |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 
 ### Gamescope HDR

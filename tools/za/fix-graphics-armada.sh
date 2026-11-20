@@ -4,9 +4,9 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: restore the 8066 path that showed head + visible (rainbow) body:
-#   XFB mirror ON, full-pool vertex binds, sparse dma-buf gmem as VB/IB.
-#   Later piece/always-inside/CPU-copy experiments went head-only or empty.
+# Target: stop city background flicker from incoherent sparse-gmem VB fetches.
+#   XFB mirror ON, draw-sized xm_lookup for skinning, CPU-copy other VB/IB after
+#   dma-buf READ sync. Do NOT bind sparse/piece dma-buf as VB by default.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -49,11 +49,12 @@ echo "fix-graphics-armada: updated $INI"
 echo
 echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
-echo "Good log lines (8066 path):"
-echo "  [vk] transform feedback mirror on (Armada/Turnip; … 8066 full-pool+gmem VB path …)"
-echo "  [vk] Turnip: full-pool vertex binds (8066 path …)"
-echo "  [vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066 path …)"
-echo "  creator: head + visible body (may be rainbow-tinted); cached + large host"
+echo "Good log lines (stable city backgrounds):"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; … draw-sized + CPU VB copy …)"
+echo "  [vk] Turnip: draw-sized vertex looks …"
+echo "  [vk] Turnip: vertices/indices CPU-copied to ring after dma-buf READ sync …"
 echo
-echo "Bad:"
-echo "  always-inside / per-piece VB / CPU copy / 0MB host with empty preview"
+echo "Bad (background flicker / green strips):"
+echo "  binding sparse dma-buf gmem as VB/IB"
+echo "  full-pool vertex binds"
+echo "  → unset LARECOMP_TURNIP_GMEM_VB / LARECOMP_XM_FULL_POOL"

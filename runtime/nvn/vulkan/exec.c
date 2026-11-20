@@ -6535,7 +6535,7 @@ static bool xm_on(void) {
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
                            cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Armada/Turnip; up to %llu MB; 8066 full-pool+gmem VB path; "
+            LOG("[vk] transform feedback mirror on (Armada/Turnip; up to %llu MB; draw-sized + CPU VB copy; "
                 "LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
                 (unsigned long long)(XM_SIZE >> 20));
         else if (on && e && g_vk.props.vendorID == 0x5143)
@@ -6684,19 +6684,18 @@ static bool xm_prepare(void) {
 // a vertex stream inside the mirror's transform feedback output: read there
 static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
     if (!xm_buf || !n || !xm_inside(a, n)) return false;
-    // 8066: all-chunks written only. always-inside (b5aa11d) made the whole character vanish;
-    // any-chunk + draw-sized left body on incoherent dma-buf (head-only). Full-pool looks miss
-    // the mirror on purpose so the body binds gmem (visible, if rainbow). LARECOMP_XM_ANY=1: any-chunk.
     if (xm_all_written(a, n)) {
         *buf = xm_buf;
         *off = a - xm_lo;
         return true;
     }
 #if defined(__linux__) && !defined(__ANDROID__)
+    // Turnip: if any chunk in the draw-sized range was written this frame, bind xm_buf (skinned
+    // body). LARECOMP_XM_STRICT=1: all-chunks only. Never always-inside (wiped the character).
     if (tw_is_adreno()) {
-        static int any = -1;
-        if (any < 0) any = ENV("LARECOMP_XM_ANY") && atoi(ENV("LARECOMP_XM_ANY"));
-        if (any) {
+        static int strict = -1;
+        if (strict < 0) strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
+        if (!strict) {
             uint32_t now = (uint32_t)vk_frame_counter() + 1;
             uint64_t c0 = (a - xm_lo) / XM_CHUNK, c1 = (a + n - 1 - xm_lo) / XM_CHUNK;
             uint64_t clim = xm_span / XM_CHUNK;
@@ -7169,23 +7168,24 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip 8066 path: bind the sparse dma-buf gmem as VB/IB. Per-piece VB was invisible (7447/006f);
-    // CPU-copy hid the body; always-inside xm wiped the character (screenshot). Sparse gmem VB gives
-    // a visible (rainbow) body under a correct head. LARECOMP_TURNIP_GMEM_VB=0: CPU copy.
-    // LARECOMP_TURNIP_PIECE_VB=1: per-piece buffers instead of sparse (debug).
+    // Turnip: do not bind HOST_CACHED dma-buf (sparse or piece) as a vertex buffer by default.
+    // Sparse gmem VB (8066) made a rainbow character body and flickering green strips on city
+    // buildings — incoherent VB fetch of guest mesh data. Misses go to tw_vb_copy (READ sync +
+    // CPU copy into the transient ring). Skinned streams still hit xm_buf above.
+    // LARECOMP_TURNIP_GMEM_VB=1: sparse gmem VB (8066). LARECOMP_TURNIP_PIECE_VB=1: per-piece VB.
     if (tw_ready && tw_is_adreno()) {
         static int mode = -1;  // 0 CPU, 1 sparse gmem, 2 piece
         if (mode < 0) {
-            if (ENV("LARECOMP_TURNIP_GMEM_VB") && !atoi(ENV("LARECOMP_TURNIP_GMEM_VB"))) mode = 0;
-            else if (ENV("LARECOMP_TURNIP_PIECE_VB") && atoi(ENV("LARECOMP_TURNIP_PIECE_VB"))) mode = 2;
-            else mode = 1;
-            if (mode == 1)
-                LOG("[vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066 path; "
-                    "LARECOMP_TURNIP_PIECE_VB=1 / GMEM_VB=0: alternatives)\n");
-            else if (mode == 2)
-                LOG("[vk] Turnip: binding per-piece dma-buf as VB/IB\n");
+            if (ENV("LARECOMP_TURNIP_PIECE_VB") && atoi(ENV("LARECOMP_TURNIP_PIECE_VB"))) mode = 2;
+            else if (ENV("LARECOMP_TURNIP_GMEM_VB") && atoi(ENV("LARECOMP_TURNIP_GMEM_VB"))) mode = 1;
+            else mode = 0;
+            if (mode == 0)
+                LOG("[vk] Turnip: vertices/indices CPU-copied to ring after dma-buf READ sync "
+                    "(fixes city background flicker; LARECOMP_TURNIP_GMEM_VB=1: 8066 sparse)\n");
+            else if (mode == 1)
+                LOG("[vk] Turnip: binding sparse dma-buf gmem as VB/IB (8066; may flicker)\n");
             else
-                LOG("[vk] Turnip: vertex/index streams CPU-copied to ring\n");
+                LOG("[vk] Turnip: binding per-piece dma-buf as VB/IB\n");
         }
         if (mode == 0) return false;
         if (mode == 2) {
@@ -9476,9 +9476,8 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
-    // Armada/Turnip (8066): full-pool guest_direct + sparse gmem VB — head from xm when the look
-    // fits, body from gmem (rainbow but visible). Draw-sized / piece / always-inside paths went
-    // head-only or empty.
+    // Armada/Turnip: draw-sized xm_lookup for skinning; other streams CPU-copied after dma-buf
+    // READ sync. Sparse gmem as VB caused city background flicker (green strips) and rainbow body.
     if (scan_src) {
         if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
         else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
@@ -9499,15 +9498,16 @@ static void draw_(CmdRec *r, bool indexed) {
             VkDeviceSize doff;
             uint64_t look = v.size;
             {
-                // Turnip 8066: full pool so body misses the mirror and binds gmem (visible rainbow).
-                // Draw-sized put head on xm_buf and body on empty/incoherent path. LARECOMP_XM_DRAW_SIZE=1: draw-sized.
+                // Turnip: draw-sized looks so skinned meshes hit xm_buf; remaining streams CPU-copy
+                // (stable city backgrounds). Full-pool + sparse gmem VB flickered buildings green.
+                // LARECOMP_XM_FULL_POOL=1: full v.size (8066-style).
                 static int draw_sz = -1;
                 if (draw_sz < 0) {
                     if (ENV("LARECOMP_XM_DRAW_SIZE")) draw_sz = atoi(ENV("LARECOMP_XM_DRAW_SIZE"));
                     else if (ENV("LARECOMP_XM_FULL_POOL")) draw_sz = !atoi(ENV("LARECOMP_XM_FULL_POOL"));
-                    else draw_sz = 0;  // full pool default (incl. Turnip)
-                    if (tw_ready && tw_is_adreno() && !draw_sz)
-                        LOG("[vk] Turnip: full-pool vertex binds (8066 path; LARECOMP_XM_DRAW_SIZE=1: draw-sized)\n");
+                    else draw_sz = tw_ready && tw_is_adreno() ? 1 : 0;
+                    if (tw_ready && tw_is_adreno() && draw_sz)
+                        LOG("[vk] Turnip: draw-sized vertex looks (xm hits; LARECOMP_XM_FULL_POOL=1: full pool)\n");
                 }
                 if (draw_sz) {
                     uint64_t stride0 = vl.stride[s];
