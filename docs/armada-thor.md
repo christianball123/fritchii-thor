@@ -89,7 +89,8 @@ Thor evidence:
 | Mirror **off** | Nothing |
 | Bind dma-buf as VB + 128 MB mirror | Head only / rainbow body |
 | Whole-window `DMA_BUF_SYNC` before submit | Head only (clobbered skinned pages) |
-| ~1600 MB cached + mirror + **GPU VB copy** + 256 MB mirror | Target path |
+| MAP_FIXED then memcpy (zero hole) | Boot crash `signal 11 accessing 0` |
+| Prefill dma-buf → MAP_FIXED + 256 MB mirror + GPU VB copy | Target path |
 
 ### Fix (needs rebuild)
 

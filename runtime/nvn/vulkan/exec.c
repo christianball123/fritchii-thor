@@ -5169,7 +5169,7 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 #if defined(__linux__) && !defined(__ANDROID__)
 // Turnip / Adreno has no VK_EXT_external_memory_host (Android uses AHardwareBuffer instead). Without a shared guest
 // window, shader global memory and XFB skinning read zeros → character creator = solid colour blocks, HUD fine.
-// Mirror Android: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
+// Armada/Turnip: host-visible dma-buf pieces mmap'd MAP_FIXED over gwin, then one sparse buffer over them.
 //
 // Share the top TW_CAP_MB of Z-A's phys window (dma-buf pieces + sparse buffer), set up at gwin_pick.
 // CPU touches the window through mmap(dma-buf); without DMA_BUF_IOCTL_SYNC the GPU can sample stale
@@ -5347,29 +5347,36 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
                 (unsigned long long)(off >> 20), (unsigned long long)req.size);
             goto fail;
         }
-        void *keep = malloc((size_t)size);
-        if (keep) memcpy(keep, (void *)(uintptr_t)(base + off), (size_t)size);
         VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
                                    .memory = mem,
                                    .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
         int fd = -1;
         if (get_fd(g_vk.dev, &fi, &fd) != VK_SUCCESS || fd < 0) {
             LOG("[vk] turnip window: no dma-buf fd at +%llu MB\n", (unsigned long long)(off >> 20));
-            free(keep);
             vkFreeMemory(g_vk.dev, mem, NULL);
             goto fail;
+        }
+        // Prefill the dma-buf *before* MAP_FIXED. The old path mmap'd first (fresh zeros) then
+        // memcpy'd guest bytes back — a multi-100ms hole where other guest threads read null
+        // pointers and died ("signal 11 accessing 0" on Thor right after "memory type …").
+        {
+            void *pre = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (pre == MAP_FAILED) {
+                LOG("[vk] turnip window: prefill mmap failed at +%llu MB (%s)\n",
+                    (unsigned long long)(off >> 20), strerror(errno));
+                close(fd);
+                vkFreeMemory(g_vk.dev, mem, NULL);
+                goto fail;
+            }
+            memcpy(pre, (void *)(uintptr_t)(base + off), (size_t)size);
+            munmap(pre, (size_t)size);
         }
         void *at = mmap((void *)(uintptr_t)(base + off), (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
         if (at != (void *)(uintptr_t)(base + off)) {
             LOG("[vk] turnip window: mmap MAP_FIXED failed at %llx (%s)\n", (unsigned long long)(base + off), strerror(errno));
             close(fd);
-            free(keep);
             vkFreeMemory(g_vk.dev, mem, NULL);
             goto fail;
-        }
-        if (keep) {
-            memcpy(at, keep, (size_t)size);
-            free(keep);
         }
         // Keep the fd for DMA_BUF_IOCTL_SYNC (mmap alone does not give Vulkan host-cache coherency).
         tw_mem[tw_n] = mem;
