@@ -4,8 +4,8 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: XFB mirror ON (clamped), any-chunk xm_lookup, per-piece 128 MB dma-buf VB binds
-#         (not the 1600 MB sparse buffer — that was the noise-body bug; CPU-copy hid the body).
+# Target: XFB mirror OFF (Android AHB-like), per-piece 128 MB dma-buf VB binds,
+#         END|WRITE flush before submit so CPU mesh is GPU-visible.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -37,7 +37,7 @@ patch_key fps60 0
 patch_key fps60_lock 0
 patch_key aniso16 0
 patch_key show_fps 1
-patch_key gpu_xfb_mirror on
+patch_key gpu_xfb_mirror off
 
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
@@ -52,6 +52,7 @@ echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
 echo "  [vk] turnip window: … (per-piece VB buffers)"
-echo "  [vk] transform feedback mirror on (Armada/Turnip; … any-chunk xm_lookup …)"
+echo "  [vk] transform feedback mirror off (Armada/Turnip: per-piece dma-buf VBs …)"
 echo "  [vk] Turnip: binding per-piece dma-buf buffers as VB/IB …"
-echo "  creator: real body; expect cached (mirror) + host (per-piece) — not 0MB host head-only"
+echo "  [vk] Turnip: DMA_BUF END|WRITE before submit …"
+echo "  creator: real body; expect large host (per-piece), little/no cached mirror"

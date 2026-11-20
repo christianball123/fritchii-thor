@@ -797,8 +797,25 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         if (at == -2) at = ENV("LARECOMP_TEST_LOST_REPORT") ? atol(ENV("LARECOMP_TEST_LOST_REPORT")) : -1;
         if (at > 0 && (long)subr_now.seq == at) { uint64_t d = 0; vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &d); lost_report(d); }
     }
-    // Do not DMA_BUF_SYNC_END|RW the whole window here: unpaired END|RW writeback of CPU-dirty lines
-    // clobbered GPU xm_copy_back / skinned body pages (b746: head only). 8066 had no sync and a visible body.
+    // Flush CPU writes through mmap(dma-buf) so per-piece VB fetches see them. END|WRITE only —
+    // END|RW writeback clobbered GPU-skinned pages (b746). LARECOMP_TURNIP_FLUSH_WRITES=0 disables.
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (tw_ready && tw_is_adreno()) {
+        static int flush = -1;
+        if (flush < 0) {
+            const char *e = ENV("LARECOMP_TURNIP_FLUSH_WRITES");
+            flush = !e || atoi(e);
+            if (flush) LOG("[vk] Turnip: DMA_BUF END|WRITE before submit (CPU→GPU; LARECOMP_TURNIP_FLUSH_WRITES=0 off)\n");
+        }
+        if (flush) {
+            for (int i = 0; i < tw_n; i++) {
+                if (tw_fd[i] < 0) continue;
+                struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE};
+                ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync);
+            }
+        }
+    }
+#endif
     rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands; its vkQueueSubmit2 time is in RecStats)
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
@@ -6503,20 +6520,22 @@ static bool xm_on(void) {
     if (on < 0) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
-        // Auto-off on AMD: the mirror ends the render pass ~110 times a frame.
-        // Armada Turnip: Auto = ON — mirror off made the character vanish (d0e8); head only appears with mirror on.
+        // Auto-off on AMD (tiler pass cost). Android Adreno: off (AHB). Armada Turnip: also off by
+        // default now — per-piece dma-buf VBs + END|WRITE flush match the AHB path; mirror ON only
+        // ever kept the head while body stayed missing/noise (d0e8 / Thor screenshots). F1 or
+        // LARECOMP_VK_XFB_MIRROR=1 still forces the mirror on for A/B.
 #ifdef __ANDROID__
-        // Android Adreno leaves it off (shared AHB heap).
         bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
 #else
-        bool auto_off = g_vk.props.vendorID == 0x1002;
+        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
 #endif
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
+                           cs == GPU_OFF ? "F1 > Compatibility"
+                           : g_vk.props.vendorID == 0x5143 ? "Armada/Turnip: per-piece dma-buf VBs (Android AHB path)"
+                                                           : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Armada/Turnip; up to %llu MB, clamped; any-chunk xm_lookup; "
-                "LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
+            LOG("[vk] transform feedback mirror on (forced; up to %llu MB clamped; LARECOMP_VK_XFB_MIRROR=0 for AHB-like path)\n",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
