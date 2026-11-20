@@ -4,8 +4,8 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: ~1600 MB cached dma-buf, XFB mirror ON (128 MB, clamped), full-pool
-#         guest_direct + dma-buf VB (8066 body path). No draw-sized xm_lookup.
+# Target: XFB mirror ON (128 MB), draw-sized xm_lookup, CPU-copy VBs into the ring
+#         (do NOT bind the 1600 MB sparse dma-buf as a VB — that is the noise-body bug).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -52,5 +52,5 @@ echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
 echo "  [vk] transform feedback mirror on (Armada/Turnip; 128 MB …)"
-echo "  [vk] Turnip: binding dma-buf gmem as vertex/index buffers …"
-echo "  creator frames: some cached + large host (full-pool dma-buf) — rainbow body OK"
+echo "  [vk] Turnip: vertex/index streams CPU-copied to ring …"
+echo "  creator: real body (not a static-noise rectangle under the head)"

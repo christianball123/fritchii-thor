@@ -80,19 +80,16 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, keeps a **128 MB** device-local XFB mirror (clamped so it never past phys/turnip), binds **full mesh pools** as dma-buf VBs when the mirror misses (8066: only config with a visible body), and prefills each dma-buf before `MAP_FIXED`.
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork shares the **top ~1600 MB** dma-buf window for shader global memory, keeps a **128 MB** device-local XFB mirror (clamped), and **never binds that sparse dma-buf as a vertex buffer** — on Thor that produced a correct head (mirror) and a static-noise body block. Skinned draws use draw-sized `xm_lookup`; everything else is CPU-copied into the transient ring after a range `DMA_BUF_SYNC` READ.
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
 | Mirror **off** | Nothing |
-| 256 MB mirror from creator `xm_lo` | Overruns phys by ~118 MB — broken |
-| Draw-sized / first-chunk `xm_lookup` | Head only / nothing |
-| GPU-copy gmem→ring on upload CB | Head only, `0MB host` |
-| Whole-window `DMA_BUF_SYNC` before submit | Head only |
-| MAP_FIXED then memcpy (zero hole) | Boot crash `signal 11 accessing 0` |
-| Prefill + 128 MB clamped mirror + full-pool dma-buf VB | Target (8066) |
+| Bind 1600 MB sparse dma-buf as VB | Head OK, body = static noise block |
+| GPU-copy on upload CB | Head only |
+| Prefill + 128 MB mirror + draw-sized xm + CPU VB copy | Target |
 
 ### Fix (needs rebuild)
 
@@ -107,23 +104,20 @@ Good log lines:
 
 ```
 [vk] turnip window: sharing top 1600 MB …
-[vk] turnip window: memory type … (cached)
 [vk] transform feedback mirror on (Armada/Turnip; 128 MB …)
-[vk] transform feedback mirror at … (+128 MB)   # or less if clamped
-[vk] Turnip: binding dma-buf gmem as vertex/index buffers …
+[vk] Turnip: vertex/index streams CPU-copied to ring (sparse dma-buf not bound as VB …
 ```
 
-Creator frames: some `cached` + large `host` (full-pool dma-buf VBs). Rainbow body is progress; head-only/`0MB host` is not.
+Creator: real body mesh (not a noise rectangle). `cached` = mirror; copies show as upload, not `host` dma-buf binds.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Turnip |
-| `LARECOMP_XM_DRAW_SIZE=1` | Draw-sized look (hid body — debug) |
-| `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body) |
-| `LARECOMP_TURNIP_DMABUF_SYNC=1` | Pre-submit dma-buf sync (hid body — debug) |
-| `LARECOMP_TURNIP_GMEM_VB=0` | CPU guest_copy instead of dma-buf VB (hid body) |
+| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible |
+| `LARECOMP_XM_FULL_POOL=1` | Full-pool look (debug) |
+| `LARECOMP_TURNIP_GMEM_VB=1` | Bind sparse dma-buf as VB (noise body) |
+| `LARECOMP_TURNIP_DMABUF_SYNC=1` | Whole-window sync before submit (hid body) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 
 ### Gamescope HDR

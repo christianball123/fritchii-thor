@@ -5218,6 +5218,33 @@ static void tw_dma_sync_for_gpu(void) {
     }
 }
 
+// CPU read of mmap'd dma-buf pieces: begin/end READ so copyback / GPU stores are visible to memcpy.
+// (Whole-window END|WRITE before submit clobbered skins — this is range-scoped READ only.)
+static void tw_cpu_sync_read(uint64_t addr, uint64_t size, bool start) {
+    if (!tw_ready || !size || !tw_span) return;
+    if (addr + size <= tw_base || addr >= tw_base + tw_span) return;
+    uint64_t lo = addr > tw_base ? addr - tw_base : 0;
+    uint64_t hi = addr + size - tw_base;
+    if (hi > tw_span) hi = tw_span;
+    uint32_t flags = (start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) | DMA_BUF_SYNC_READ;
+    for (int i = 0; i < tw_n; i++) {
+        if (tw_fd[i] < 0) continue;
+        uint64_t po = tw_off[i], pe = po + tw_size[i];
+        if (pe <= lo || po >= hi) continue;
+        struct dma_buf_sync sync = {.flags = flags};
+        ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync);
+    }
+}
+
+// Copy guest VB/IB bytes into the transient ring. On Turnip the 1600 MB sparse dma-buf is not a safe
+// VB bind (head OK on xm_buf; body = static noise block on Thor). CPU-copy draw-sized ranges instead.
+static VkSpan tw_vb_copy(uint64_t addr, uint64_t size) {
+    tw_cpu_sync_read(addr, size, true);
+    VkSpan sp = guest_copy(addr, size ? size : 16);
+    tw_cpu_sync_read(addr, size, false);
+    return sp;
+}
+
 static void tw_free(void) {
     uint64_t b = tw_base, s = tw_span;
     for (int i = 0; i < tw_n; i++) {
@@ -7051,14 +7078,17 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: bind the dma-buf window as VB/IB (8066 had a visible body this way).
-    // LARECOMP_TURNIP_GMEM_VB=0 forces guest_copy instead (CPU path — hid the body before).
+    // Turnip: never bind the 1600 MB sparse dma-buf as VB/IB — Thor shows a static noise block for
+    // the body while the head (xm_buf) is fine. Fall through to tw_vb_copy / guest_copy.
+    // LARECOMP_TURNIP_GMEM_VB=1 restores direct binds (debug; garbage body).
     if (tw_ready && tw_is_adreno()) {
         static int allow = -1;
         if (allow < 0) {
             const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-            allow = !e || atoi(e);  // default on
-            if (allow) LOG("[vk] Turnip: binding dma-buf gmem as vertex/index buffers (LARECOMP_TURNIP_GMEM_VB=0: CPU copy)\n");
+            allow = e && atoi(e);  // default: CPU copy, not direct bind
+            if (!allow)
+                LOG("[vk] Turnip: vertex/index streams CPU-copied to ring (sparse dma-buf not bound as VB; "
+                    "LARECOMP_TURNIP_GMEM_VB=1: direct bind)\n");
         }
         if (!allow) return false;
     }
@@ -9266,7 +9296,14 @@ static void draw_(CmdRec *r, bool indexed) {
             if (iaddr % isz == 0 && guest_direct(1, iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
-                ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
+                uint64_t ib_bytes = (uint64_t)count * isz;
+#if defined(__linux__) && !defined(__ANDROID__)
+                if (tw_ready && tw_is_adreno()) tw_cpu_sync_read(iaddr, ib_bytes, true);
+#endif
+                ib = vk_transient_copy(src, ib_bytes + 4, 4);
+#if defined(__linux__) && !defined(__ANDROID__)
+                if (tw_ready && tw_is_adreno()) tw_cpu_sync_read(iaddr, ib_bytes, false);
+#endif
                 if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
                 else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
@@ -9294,9 +9331,9 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
-    // Thor/Turnip (8066): bind the *full* pool via guest_direct (v.size). Draw-sized xm_lookup
-    // put the head on the mirror and left the body on incoherent dma-buf / empty — head-only or nothing.
-    // Full-pool misses the 128 MB mirror and binds gmem as VB (rainbow body was at least visible).
+    // Armada/Turnip: use draw-sized looks so skinned body hits the XFB mirror (xm_buf). Never bind the
+    // 1600 MB sparse dma-buf as a VB (Thor: static noise block under a correct head). Misses go through
+    // tw_vb_copy (dma-buf READ sync + CPU copy into the transient ring).
     if (scan_src) {
         if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
         else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
@@ -9315,12 +9352,15 @@ static void draw_(CmdRec *r, bool indexed) {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
             VkDeviceSize doff;
-            // Default: full pool (8066). LARECOMP_XM_DRAW_SIZE=1: draw-sized look (debug).
             uint64_t look = v.size;
             {
-                static int draw_sz = -1;
-                if (draw_sz < 0) draw_sz = ENV("LARECOMP_XM_DRAW_SIZE") && atoi(ENV("LARECOMP_XM_DRAW_SIZE"));
-                if (draw_sz) {
+                // Turnip default: draw-sized (mirror hits). LARECOMP_XM_FULL_POOL=1: full v.size (debug).
+                static int full_pool = -1;
+                if (full_pool < 0) {
+                    if (ENV("LARECOMP_XM_FULL_POOL")) full_pool = atoi(ENV("LARECOMP_XM_FULL_POOL"));
+                    else full_pool = !(tw_ready && tw_is_adreno());
+                }
+                if (!full_pool) {
                     uint64_t stride0 = vl.stride[s];
                     if (v.addr && v.size && stride0 && !vl.divisor[s] && max_index) {
                         look = (uint64_t)max_index * stride0 + 256;
@@ -9380,6 +9420,9 @@ static void draw_(CmdRec *r, bool indexed) {
                 }
             }
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
+#if defined(__linux__) && !defined(__ANDROID__)
+            else if (tw_ready && tw_is_adreno()) sp = tw_vb_copy(v.addr, need ? need : 16);
+#endif
             else sp = guest_copy(v.addr, need ? need : 16);
         }
         VkDeviceSize off = sp.off;
