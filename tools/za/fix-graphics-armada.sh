@@ -4,8 +4,8 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: XFB mirror ON (128 MB), draw-sized xm_lookup, CPU-copy VBs into the ring
-#         (do NOT bind the 1600 MB sparse dma-buf as a VB — that is the noise-body bug).
+# Target: XFB mirror ON (clamped), any-chunk xm_lookup, per-piece 128 MB dma-buf VB binds
+#         (not the 1600 MB sparse buffer — that was the noise-body bug; CPU-copy hid the body).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -51,6 +51,7 @@ echo
 echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
-echo "  [vk] transform feedback mirror on (Armada/Turnip; … clamped; any-chunk xm_lookup …)"
-echo "  [vk] Turnip: vertex/index streams CPU-copied to ring …"
-echo "  creator: real body; log 'cached' should rise well above ~49 MB (not head-only)"
+echo "  [vk] turnip window: … (per-piece VB buffers)"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; … any-chunk xm_lookup …)"
+echo "  [vk] Turnip: binding per-piece dma-buf buffers as VB/IB …"
+echo "  creator: real body; expect cached (mirror) + host (per-piece) — not 0MB host head-only"

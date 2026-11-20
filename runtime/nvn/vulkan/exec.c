@@ -5179,6 +5179,7 @@ static bool gmir_make(VkBuffer *buf, VkDeviceMemory *mem, uint64_t size) {
 // TW_CAP_MB near gwin_pick.
 static int tw_n;
 static VkDeviceMemory tw_mem[TW_MAX];
+static VkBuffer tw_buf[TW_MAX];  // non-sparse per-piece buffers for VB/IB (sparse 1600 MB gmem is unsafe as VB on Turnip)
 static int tw_fd[TW_MAX];  // kept open for DMA_BUF_IOCTL_SYNC; -1 when unused
 static uint64_t tw_off[TW_MAX], tw_size[TW_MAX];
 static uint64_t tw_base, tw_span;  // absolute guest base + span actually mapped
@@ -5186,7 +5187,7 @@ static bool tw_ready;
 static pthread_mutex_t tw_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void tw_fd_clear(void) {
-    for (int i = 0; i < TW_MAX; i++) tw_fd[i] = -1;
+    for (int i = 0; i < TW_MAX; i++) tw_fd[i] = -1, tw_buf[i] = VK_NULL_HANDLE;
 }
 
 static bool tw_is_adreno(void) {
@@ -5236,8 +5237,7 @@ static void tw_cpu_sync_read(uint64_t addr, uint64_t size, bool start) {
     }
 }
 
-// Copy guest VB/IB bytes into the transient ring. On Turnip the 1600 MB sparse dma-buf is not a safe
-// VB bind (head OK on xm_buf; body = static noise block on Thor). CPU-copy draw-sized ranges instead.
+// Copy guest VB/IB bytes into the transient ring (fallback when a stream crosses piece boundaries).
 static VkSpan tw_vb_copy(uint64_t addr, uint64_t size) {
     tw_cpu_sync_read(addr, size, true);
     VkSpan sp = guest_copy(addr, size ? size : 16);
@@ -5245,9 +5245,25 @@ static VkSpan tw_vb_copy(uint64_t addr, uint64_t size) {
     return sp;
 }
 
+// Bind a single 128 MB dma-buf piece as VB/IB (not the 1600 MB sparse gmem_buf).
+static bool tw_piece_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (!tw_ready || !size || addr < tw_base || addr + size > tw_base + tw_span) return false;
+    uint64_t o = addr - tw_base;
+    for (int i = 0; i < tw_n; i++) {
+        if (!tw_buf[i]) continue;
+        if (o >= tw_off[i] && o + size <= tw_off[i] + tw_size[i]) {
+            *buf = tw_buf[i];
+            *off = o - tw_off[i];
+            return true;
+        }
+    }
+    return false;  // crosses a piece boundary
+}
+
 static void tw_free(void) {
     uint64_t b = tw_base, s = tw_span;
     for (int i = 0; i < tw_n; i++) {
+        if (tw_buf[i]) vkDestroyBuffer(g_vk.dev, tw_buf[i], NULL), tw_buf[i] = VK_NULL_HANDLE;
         if (tw_mem[i]) vkFreeMemory(g_vk.dev, tw_mem[i], NULL);
         tw_mem[i] = VK_NULL_HANDLE;
         if (tw_fd[i] >= 0) close(tw_fd[i]), tw_fd[i] = -1;
@@ -5405,8 +5421,31 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
             vkFreeMemory(g_vk.dev, mem, NULL);
             goto fail;
         }
+        // Non-sparse VkBuffer over this piece — VB/IB binds use these (8066 body was dma-buf VBs;
+        // binding the 1600 MB sparse gmem instead made a static-noise body; CPU-copy hid the body).
+        VkBuffer piece = VK_NULL_HANDLE;
+        {
+            VkExternalMemoryBufferCreateInfo ebi = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                                    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+            VkBufferCreateInfo pbi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                     .pNext = &ebi,
+                                     .size = size,
+                                     .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                              VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+            if (vkCreateBuffer(g_vk.dev, &pbi, NULL, &piece) != VK_SUCCESS ||
+                vkBindBufferMemory(g_vk.dev, piece, mem, 0) != VK_SUCCESS) {
+                LOG("[vk] turnip window: per-piece VB buffer failed at +%llu MB\n", (unsigned long long)(off >> 20));
+                if (piece) vkDestroyBuffer(g_vk.dev, piece, NULL), piece = VK_NULL_HANDLE;
+                close(fd);
+                vkFreeMemory(g_vk.dev, mem, NULL);
+                goto fail;
+            }
+        }
         // Keep the fd for DMA_BUF_IOCTL_SYNC (mmap alone does not give Vulkan host-cache coherency).
         tw_mem[tw_n] = mem;
+        tw_buf[tw_n] = piece;
         tw_fd[tw_n] = fd;
         tw_off[tw_n] = off;
         tw_size[tw_n] = size;
@@ -5418,7 +5457,7 @@ static bool turnip_window_make(uint64_t gbase, uint64_t gmax) {
     tw_base = base;
     tw_span = span;
     tw_ready = true;
-    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU\n", tw_n,
+    LOG("[vk] turnip window: %d dma-buf pieces (%llu MB) at %llx shared with the GPU (per-piece VB buffers)\n", tw_n,
         (unsigned long long)(span >> 20), (unsigned long long)base);
     pthread_mutex_unlock(&tw_lock);
     return true;
@@ -7108,19 +7147,25 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: never bind the 1600 MB sparse dma-buf as VB/IB — Thor shows a static noise block for
-    // the body while the head (xm_buf) is fine. Fall through to tw_vb_copy / guest_copy.
-    // LARECOMP_TURNIP_GMEM_VB=1 restores direct binds (debug; garbage body).
+    // Turnip: bind per-piece 128 MB buffers (LAS/Thor heap-dmabuf lesson + 8066 host VBs). Never the
+    // 1600 MB sparse gmem (noise body). LARECOMP_TURNIP_GMEM_VB=0: CPU-copy fallback only.
     if (tw_ready && tw_is_adreno()) {
-        static int allow = -1;
-        if (allow < 0) {
+        static int piece = -1;
+        if (piece < 0) {
             const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-            allow = e && atoi(e);  // default: CPU copy, not direct bind
-            if (!allow)
-                LOG("[vk] Turnip: vertex/index streams CPU-copied to ring (sparse dma-buf not bound as VB; "
-                    "LARECOMP_TURNIP_GMEM_VB=1: direct bind)\n");
+            piece = !e || atoi(e);  // default on
+            if (piece)
+                LOG("[vk] Turnip: binding per-piece dma-buf buffers as VB/IB (not sparse 1600 MB; "
+                    "LARECOMP_TURNIP_GMEM_VB=0: CPU copy)\n");
+            else
+                LOG("[vk] Turnip: vertex/index streams CPU-copied to ring (LARECOMP_TURNIP_GMEM_VB=1: per-piece)\n");
         }
-        if (!allow) return false;
+        if (!piece) return false;
+        if (tw_piece_direct(addr, size, buf, off)) {
+            stat_vtx_host += size;
+            return true;
+        }
+        return false;  // cross-piece → tw_vb_copy
     }
 #endif
     stat_vtx_host += size;
