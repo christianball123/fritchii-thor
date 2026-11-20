@@ -6409,9 +6409,10 @@ static VkDescriptorBufferInfo gfast_info(void) {
 // heap as before; the window follows the sessions when they move (xm_prepare). LARECOMP_VK_XFB_MIRROR=0: off, =1: on.
 // Off by default on AMD (#22).
 //
-// Armada / Mesa Turnip (Adreno): dma-buf guest window is not safe as a VB — head lived on this mirror, body on
-// gmem stayed missing/rainbow across cached/uncached/sync experiments. Use a larger mirror (256 MB) and GPU-copy
-// any remaining gmem VBs into the transient ring (never bind the dma-buf as a vertex buffer).
+// Armada / Mesa Turnip (Adreno): keep a larger device-local mirror (256 MB). Head already lives here; body
+// pools overran the old 128 MB window. Prefer mirror hits (relaxed: first chunk written this frame) over the
+// dma-buf VB path; when the mirror misses, bind the dma-buf directly (8066: only config that showed a body).
+// Do NOT GPU-copy gmem→ring on the upload CB — that counted as "cached", left host at 0, and still head-only.
 #if defined(__linux__) && !defined(__ANDROID__)
 #define XM_SIZE (256ull << 20)
 #else
@@ -6449,7 +6450,7 @@ static bool xm_on(void) {
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
                            cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Armada/Turnip; %llu MB; LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
+            LOG("[vk] transform feedback mirror on (Armada/Turnip; %llu MB; first-chunk xm_lookup; LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -6573,10 +6574,31 @@ static bool xm_prepare(void) {
 
 // a vertex stream inside the mirror's transform feedback output: read there
 static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
-    if (!xm_buf || !xm_all_written(a, n)) return false;
-    *buf = xm_buf;
-    *off = a - xm_lo;
-    return true;
+    if (!xm_buf || !n || !xm_inside(a, n)) return false;
+    if (xm_all_written(a, n)) {
+        *buf = xm_buf;
+        *off = a - xm_lo;
+        return true;
+    }
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Turnip: draw-sized looks still over-read a few unwritten 256 B chunks past the XFB
+    // payload; requiring every chunk hid the body (fell through to gmem) while the head's
+    // tight ranges stayed on the mirror. If the first chunk was written this frame, trust
+    // the device-local mirror for the bind (LARECOMP_XM_STRICT=1 restores all-chunks).
+    if (tw_is_adreno()) {
+        static int strict = -1;
+        if (strict < 0) strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
+        if (!strict) {
+            uint32_t now = (uint32_t)vk_frame_counter() + 1;
+            if (xm_written[(a - xm_lo) / XM_CHUNK] == now) {
+                *buf = xm_buf;
+                *off = a - xm_lo;
+                return true;
+            }
+        }
+    }
+#endif
+    return false;
 }
 
 // the submission's end (outside any pass): what transform feedback wrote, to the heap
@@ -7007,31 +7029,6 @@ void vc_flush(void) {
 // CPU writes as on the Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1
 // forces copies.
 
-// Armada/Turnip: copy [addr,addr+size) from the dma-buf gmem window into the transient ring on the *upload*
-// command buffer (GPU→GPU). Never bind the dma-buf itself as a VB — that path left body missing on Thor while
-// the XFB mirror (device-local) kept the head. LARECOMP_TURNIP_GMEM_VB=1 restores direct gmem binds (debug).
-#if defined(__linux__) && !defined(__ANDROID__)
-static bool turnip_gpu_vb_copy(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
-    if (!tw_ready || !tw_is_adreno() || !gmem_buf || !size || !GM_IN(addr, size)) return false;
-    static int direct = -1;
-    if (direct < 0) {
-        const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-        direct = e && atoi(e);  // default: GPU copy, not direct bind
-        if (!direct) LOG("[vk] Turnip: gmem vertex/index streams GPU-copied to transient ring (not bound as dma-buf VB)\n");
-    }
-    if (direct) return false;
-    enum { COPY_MAX = 64ull << 20 };  // one stream this big is already a bug; don't blow the ring
-    if (size > COPY_MAX) return false;
-    VkSpan sp = vk_transient(size, 256);
-    VkBufferCopy cp = {.srcOffset = GM_OFF(addr), .dstOffset = sp.off, .size = size};
-    VkCommandBuffer ucb = vk_upload_cmd();
-    gmem_copy(ucb, sp.buf, &cp, 1, false);
-    *buf = sp.buf;
-    *off = sp.off;
-    return true;
-}
-#endif
-
 // index: an index buffer. Never read from the transform feedback mirror: transform feedback writes vertex data only, the mirror has no INDEX_BUFFER usage (the validation
 // layer: vkCmdBindIndexBuffer on it, 423 times in 15 s), and index data the game wrote into the arena's memory after a session (chunks count as written by 256-byte
 // chunk) was read from stale mirror bytes: invisible walls and empty text boxes.
@@ -7059,18 +7056,16 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: GPU-copy into the ring; never bind the dma-buf as VB unless LARECOMP_TURNIP_GMEM_VB=1.
-    if (turnip_gpu_vb_copy(addr, size, buf, off)) {
-        stat_vtx_cached += size;
-        return true;
-    }
+    // Turnip: bind the dma-buf window as VB/IB (8066 had a visible body this way).
+    // LARECOMP_TURNIP_GMEM_VB=0 forces guest_copy instead (CPU path — hid the body before).
     if (tw_ready && tw_is_adreno()) {
-        static int allow_direct = -1;
-        if (allow_direct < 0) {
+        static int allow = -1;
+        if (allow < 0) {
             const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-            allow_direct = e && atoi(e);
+            allow = !e || atoi(e);  // default on
+            if (allow) LOG("[vk] Turnip: binding dma-buf gmem as vertex/index buffers (LARECOMP_TURNIP_GMEM_VB=0: CPU copy)\n");
         }
-        if (!allow_direct) return false;  // CPU guest_copy path instead of dma-buf VB
+        if (!allow) return false;
     }
 #endif
     stat_vtx_host += size;
