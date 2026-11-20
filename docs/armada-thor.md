@@ -12,7 +12,7 @@ Official releases are **Windows / Linux x86-64 only**. Upstream closed an arm64 
 |------|--------|
 | Target | AYN Thor (Snapdragon 8 Gen 2, Adreno) on Armada OS; other Armada aarch64 handhelds may work |
 | Build | Native on-device (or any aarch64 Linux with glibc 2.35+, clang, Vulkan 1.3) |
-| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror off** (per-piece dma-buf XFB+VB), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
+| GPU | Mesa Turnip; Adreno defaults: quad-control for eyes, **XFB mirror on** (always-inside `xm_buf`; no piece VB), D24 depth, dynamic-state refresh after pipeline bind, soft-fail missing Vulkan features |
 | Pages | 4K (Thor) or 16K; **64K page kernels are not supported** |
 | Performance | Handheld settings first (lower internal resolution, 30 fps) |
 
@@ -80,23 +80,23 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** of Z-A’s guest window as **128 MB dma-buf pieces** (mmap + per-piece `VkBuffer`s + one sparse buffer for shader storage). Character skinning matches the **Android AHB path**: **XFB mirror off**, XFB writes into the **same per-piece buffer** the draw binds as a vertex buffer.
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork maps the **top ~1600 MB** of Z-A’s guest window as **128 MB dma-buf pieces** (shader storage + index binds) and keeps a **device-local XFB mirror**. Skinned vertex streams bind that mirror (`xm_buf`); other vertices are CPU-copied after a dma-buf READ sync. **Piece buffers are not used as vertex buffers** — HOST_CACHED piece XFB→VB stayed body-less (006f).
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
 | Bind 1600 MB sparse dma-buf as VB | Head OK, body = static noise |
-| Mirror **on** + piece VB | Head OK, body wrong/missing (7447) — sparse XFB/copy ≠ piece VB fetch |
-| Unpaired `DMA_BUF` END\|WRITE / END\|RW before submit | Hid or clobbered body |
-| Mirror **off** + XFB through per-piece buffer (same as VB) | Target (Android AHB-like) |
+| Mirror on + piece VB | Head OK, body missing (7447) |
+| Mirror off + XFB through same piece as VB | Still no body (006f) |
+| Mirror on + always-inside `xm_lookup` + CPU-copy verts (no piece VB) | Target |
 
 ### Fix (needs rebuild)
 
 ```bash
 git pull
 tools/za/build-armada.sh
-tools/za/fix-graphics-armada.sh   # forces gpu_xfb_mirror=off in larecomp.ini
+tools/za/fix-graphics-armada.sh   # forces gpu_xfb_mirror=on
 ./build/linux/aarch64/za/lasrecomp
 ```
 
@@ -104,23 +104,20 @@ Good log lines:
 
 ```
 [vk] turnip window: sharing top 1600 MB …
-[vk] turnip window: … (per-piece VB buffers)
-[vk] transform feedback mirror off (Armada/Turnip: per-piece dma-buf VBs …)
-[vk] Turnip: binding per-piece dma-buf buffers as VB/IB …
-[vk] Turnip: XFB writes through per-piece dma-buf (same VkBuffer as VB; AHB-like)
+[vk] transform feedback mirror on (Armada/Turnip; … always-inside xm_lookup …)
+[vk] Turnip: xm_lookup always-inside mirror …
+[vk] Turnip: vertices from XFB mirror or CPU copy; indices from per-piece dma-buf …
 ```
 
-If you still see `gpu_xfb_mirror=on` / `transform feedback mirror on (F1/larecomp.ini…)`, re-run `fix-graphics-armada.sh` and restart — old ini forced the head-only path.
-
-Creator: real body mesh. Expect `host` (per-piece) vertex traffic and little/no `cached` mirror.
+Creator: real body. Expect substantial `cached` (mirror) and `upload` (CPU-copied verts), little `host`.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
-| `LARECOMP_VK_XFB_MIRROR=1` | Force mirror on (debug; often head-only on Thor) |
-| `LARECOMP_TURNIP_GMEM_VB=0` | CPU-copy VBs instead of per-piece binds |
-| `LARECOMP_TURNIP_DMABUF_SYNC=1` | Unpaired END\|WRITE before submit (hid body) |
+| `LARECOMP_VK_XFB_MIRROR=0` | Mirror off (006f path — no body) |
+| `LARECOMP_TURNIP_GMEM_VB=1` | Bind piece buffers as VB (debug) |
+| `LARECOMP_XM_STRICT=1` | Require written chunks (disable always-inside) |
 | `LARECOMP_TURNIP_WINDOW=0` | Disable share (solid blocks) |
 
 ### Gamescope HDR

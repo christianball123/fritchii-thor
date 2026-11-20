@@ -4,9 +4,10 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: XFB mirror OFF (Android AHB-like). XFB writes into the same per-piece
-#         128 MB dma-buf VkBuffer that VB/IB binds use — sparse gmem as VB was
-#         noise; sparse XFB + piece VB was stale body (7447).
+# Target: XFB mirror ON + always-inside xm_lookup (device-local xm_buf for skinned
+#         verts). Piece dma-buf is NOT used as a vertex buffer (006f: same-piece
+#         XFB→VB still had no body on HOST_CACHED Turnip memory). Indices may use
+#         pieces; other verts CPU-copied after dma-buf READ sync.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -38,7 +39,7 @@ patch_key fps60 0
 patch_key fps60_lock 0
 patch_key aniso16 0
 patch_key show_fps 1
-patch_key gpu_xfb_mirror off
+patch_key gpu_xfb_mirror on
 
 if [ -d "$DATA/cache" ]; then
   rm -rf "$DATA/cache"
@@ -51,13 +52,13 @@ echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
 echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
-echo "  [vk] turnip window: … (per-piece VB buffers)"
-echo "  [vk] transform feedback mirror off (Armada/Turnip: per-piece dma-buf VBs …)"
-echo "  [vk] Turnip: binding per-piece dma-buf buffers as VB/IB …"
-echo "  [vk] Turnip: XFB writes through per-piece dma-buf (same VkBuffer as VB; AHB-like)"
-echo "  creator: real body; expect host traffic, little/no cached mirror"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; … always-inside xm_lookup …)"
+echo "  [vk] Turnip: xm_lookup always-inside mirror …"
+echo "  [vk] Turnip: vertices from XFB mirror or CPU copy; indices from per-piece dma-buf …"
+echo "  creator: real body; expect substantial cached (mirror), upload for CPU-copied verts"
 echo
-echo "Bad (old settings still forcing mirror):"
-echo "  [settings] … gpu_xfb_mirror=on"
-echo "  [vk] transform feedback mirror on (F1/larecomp.ini …)"
-echo "  → re-run this script, then restart lasrecomp"
+echo "Bad (still on the 006f path):"
+echo "  transform feedback mirror off"
+echo "  XFB writes through per-piece dma-buf"
+echo "  vertices 0MB cached … host"
+echo "  → re-run this script (gpu_xfb_mirror=on), rebuild, restart"

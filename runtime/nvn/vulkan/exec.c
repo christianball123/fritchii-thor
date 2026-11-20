@@ -6524,24 +6524,22 @@ static bool xm_on(void) {
     if (on < 0) {
         const char *e = ENV("LARECOMP_VK_XFB_MIRROR");
         int cs = g_settings.gpu_compat[GPU_XFB_MIRROR];  // (F1 > Compatibility)
-        // Auto-off on AMD (tiler pass cost). Android Adreno: off (AHB). Armada Turnip: also off by
-        // default now — per-piece dma-buf VBs + END|WRITE flush match the AHB path; mirror ON only
-        // ever kept the head while body stayed missing/noise (d0e8 / Thor screenshots). F1 or
-        // LARECOMP_VK_XFB_MIRROR=1 still forces the mirror on for A/B.
+        // Auto-off on AMD (tiler) and Android Adreno (AHB). Armada Turnip: ON — only device-local
+        // xm_buf has ever shown a correct head; piece/AHB-like XFB→VB stayed body-less (006f).
 #ifdef __ANDROID__
         bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
 #else
-        bool auto_off = g_vk.props.vendorID == 0x1002 || g_vk.props.vendorID == 0x5143;
+        bool auto_off = g_vk.props.vendorID == 0x1002;  // Turnip: prefer mirror on
 #endif
         on = e ? atoi(e) != 0 : cs != GPU_AUTO ? cs == GPU_ON : !auto_off;
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
-                           cs == GPU_OFF ? "F1 > Compatibility"
-                           : g_vk.props.vendorID == 0x5143 ? "Armada/Turnip: per-piece dma-buf VBs (Android AHB path)"
-                                                           : "this AMD GPU, F1 > Compatibility to turn it on");
-        else if (on && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (%s; up to %llu MB clamped — often head-only on Thor; "
-                "run tools/za/fix-graphics-armada.sh or LARECOMP_VK_XFB_MIRROR=0)\n",
-                e ? "LARECOMP_VK_XFB_MIRROR" : "F1/larecomp.ini gpu_xfb_mirror=on",
+                           cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
+        else if (on && !e && g_vk.props.vendorID == 0x5143)
+            LOG("[vk] transform feedback mirror on (Armada/Turnip; up to %llu MB; always-inside xm_lookup; "
+                "LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
+                (unsigned long long)(XM_SIZE >> 20));
+        else if (on && e && g_vk.props.vendorID == 0x5143)
+            LOG("[vk] transform feedback mirror on (LARECOMP_VK_XFB_MIRROR; up to %llu MB)\n",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -6686,34 +6684,28 @@ static bool xm_prepare(void) {
 // a vertex stream inside the mirror's transform feedback output: read there
 static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
     if (!xm_buf || !n || !xm_inside(a, n)) return false;
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Turnip: anything inside the mirror binds xm_buf. Head only ever worked from this device-local
+    // buffer; piece/HOST_CACHED VB (006f) and written-chunk gating (7447) left the body missing.
+    // LARECOMP_XM_STRICT=1: require all chunks written this frame (desktop-like).
+    if (tw_is_adreno()) {
+        static int strict = -1;
+        if (strict < 0) {
+            strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
+            if (!strict) LOG("[vk] Turnip: xm_lookup always-inside mirror (LARECOMP_XM_STRICT=1: written chunks only)\n");
+        }
+        if (!strict) {
+            *buf = xm_buf;
+            *off = a - xm_lo;
+            return true;
+        }
+    }
+#endif
     if (xm_all_written(a, n)) {
         *buf = xm_buf;
         *off = a - xm_lo;
         return true;
     }
-#if defined(__linux__) && !defined(__ANDROID__)
-    // Thor log (CPU-copy path): 49 MB cached (head) + 0 host + ~285 MB upload, body missing.
-    // Draw-sized looks still span a few unwritten 256 B chunks past each XFB payload; all-chunks
-    // failed → tw_vb_copy read stale gmem (pre-skin). If this frame wrote *any* chunk in the
-    // range, bind the device-local mirror (LARECOMP_XM_STRICT=1: all-chunks only).
-    if (tw_is_adreno()) {
-        static int strict = -1;
-        if (strict < 0) strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
-        if (!strict) {
-            uint32_t now = (uint32_t)vk_frame_counter() + 1;
-            uint64_t c0 = (a - xm_lo) / XM_CHUNK, c1 = (a + n - 1 - xm_lo) / XM_CHUNK;
-            uint64_t clim = xm_span / XM_CHUNK;
-            if (clim && c1 >= clim) c1 = clim - 1;
-            for (uint64_t c = c0; c <= c1; c++) {
-                if (xm_written[c] == now) {
-                    *buf = xm_buf;
-                    *off = a - xm_lo;
-                    return true;
-                }
-            }
-        }
-    }
-#endif
     return false;
 }
 
@@ -7199,25 +7191,27 @@ static bool guest_direct(int kind, uint64_t addr, uint64_t size, VkBuffer *buf, 
     if (vcache_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
     if (kind == 0 && xm_lookup(addr, size, buf, off)) { stat_vtx_cached += size; return true; }
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: bind per-piece 128 MB buffers (LAS/Thor heap-dmabuf lesson + 8066 host VBs). Never the
-    // 1600 MB sparse gmem (noise body). LARECOMP_TURNIP_GMEM_VB=0: CPU-copy fallback only.
+    // Turnip: never bind HOST_CACHED piece buffers as *vertex* buffers — XFB/copy into them is not
+    // visible to VB fetch (006f: mirror off + same-piece XFB, 127 MB host, still no body). Vertices
+    // come from xm_buf (above) or CPU copy (return false → tw_vb_copy). Indices may use pieces.
+    // LARECOMP_TURNIP_GMEM_VB=1: also bind pieces as VB (debug; was noise/missing).
     if (tw_ready && tw_is_adreno()) {
-        static int piece = -1;
-        if (piece < 0) {
+        static int piece_vb = -1;
+        if (piece_vb < 0) {
             const char *e = ENV("LARECOMP_TURNIP_GMEM_VB");
-            piece = !e || atoi(e);  // default on
-            if (piece)
-                LOG("[vk] Turnip: binding per-piece dma-buf buffers as VB/IB (not sparse 1600 MB; "
-                    "LARECOMP_TURNIP_GMEM_VB=0: CPU copy)\n");
+            piece_vb = e && atoi(e);  // default OFF for VB
+            if (piece_vb)
+                LOG("[vk] Turnip: binding per-piece dma-buf as VB/IB (LARECOMP_TURNIP_GMEM_VB debug)\n");
             else
-                LOG("[vk] Turnip: vertex/index streams CPU-copied to ring (LARECOMP_TURNIP_GMEM_VB=1: per-piece)\n");
+                LOG("[vk] Turnip: vertices from XFB mirror or CPU copy; indices from per-piece dma-buf "
+                    "(LARECOMP_TURNIP_GMEM_VB=1: piece VB)\n");
         }
-        if (!piece) return false;
+        if (kind == 0 && !piece_vb) return false;  // vertex → tw_vb_copy
         if (tw_piece_direct(addr, size, buf, off)) {
             stat_vtx_host += size;
             return true;
         }
-        return false;  // cross-piece → tw_vb_copy
+        return false;
     }
 #endif
     stat_vtx_host += size;
