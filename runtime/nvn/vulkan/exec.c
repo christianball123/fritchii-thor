@@ -797,25 +797,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         if (at == -2) at = ENV("LARECOMP_TEST_LOST_REPORT") ? atol(ENV("LARECOMP_TEST_LOST_REPORT")) : -1;
         if (at > 0 && (long)subr_now.seq == at) { uint64_t d = 0; vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &d); lost_report(d); }
     }
-    // Flush CPU writes through mmap(dma-buf) so per-piece VB fetches see them. END|WRITE only —
-    // END|RW writeback clobbered GPU-skinned pages (b746). LARECOMP_TURNIP_FLUSH_WRITES=0 disables.
-#if defined(__linux__) && !defined(__ANDROID__)
-    if (tw_ready && tw_is_adreno()) {
-        static int flush = -1;
-        if (flush < 0) {
-            const char *e = ENV("LARECOMP_TURNIP_FLUSH_WRITES");
-            flush = !e || atoi(e);
-            if (flush) LOG("[vk] Turnip: DMA_BUF END|WRITE before submit (CPU→GPU; LARECOMP_TURNIP_FLUSH_WRITES=0 off)\n");
-        }
-        if (flush) {
-            for (int i = 0; i < tw_n; i++) {
-                if (tw_fd[i] < 0) continue;
-                struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE};
-                ioctl(tw_fd[i], DMA_BUF_IOCTL_SYNC, &sync);
-            }
-        }
-    }
-#endif
+    // Do not unpaired DMA_BUF END|WRITE here: it hid the body when mirror was on (stale CPU lines
+    // overwrote GPU XFB). Opt-in: LARECOMP_TURNIP_DMABUF_SYNC=1 → tw_dma_sync_for_gpu().
     rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands; its vkQueueSubmit2 time is in RecStats)
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
@@ -5277,6 +5260,27 @@ static bool tw_piece_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDevic
     return false;  // crosses a piece boundary
 }
 
+// Same piece VkBuffer the VB path binds — Turnip does not reliably see sparse-gmem XFB/TRANSFER
+// writes when fetching vertices from a different buffer on the same dma-buf memory (7447: head from
+// xm_buf OK, body from piece stale/wrong). XFB with mirror off writes through this buffer instead.
+static VkBuffer tw_xfb_buf;
+static uint64_t tw_xfb_base, tw_xfb_size;  // guest base + piece size for descriptor offsets
+
+static bool tw_piece_span(uint64_t addr, uint64_t size, int *out_i, VkBuffer *buf, uint64_t *guest_base) {
+    if (!tw_ready || !size || addr < tw_base || addr + size > tw_base + tw_span) return false;
+    uint64_t o = addr - tw_base;
+    for (int i = 0; i < tw_n; i++) {
+        if (!tw_buf[i]) continue;
+        if (o >= tw_off[i] && o + size <= tw_off[i] + tw_size[i]) {
+            if (out_i) *out_i = i;
+            if (buf) *buf = tw_buf[i];
+            if (guest_base) *guest_base = tw_base + tw_off[i];
+            return true;
+        }
+    }
+    return false;
+}
+
 static void tw_free(void) {
     uint64_t b = tw_base, s = tw_span;
     for (int i = 0; i < tw_n; i++) {
@@ -6534,8 +6538,10 @@ static bool xm_on(void) {
                            cs == GPU_OFF ? "F1 > Compatibility"
                            : g_vk.props.vendorID == 0x5143 ? "Armada/Turnip: per-piece dma-buf VBs (Android AHB path)"
                                                            : "this AMD GPU, F1 > Compatibility to turn it on");
-        else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (forced; up to %llu MB clamped; LARECOMP_VK_XFB_MIRROR=0 for AHB-like path)\n",
+        else if (on && g_vk.props.vendorID == 0x5143)
+            LOG("[vk] transform feedback mirror on (%s; up to %llu MB clamped — often head-only on Thor; "
+                "run tools/za/fix-graphics-armada.sh or LARECOMP_VK_XFB_MIRROR=0)\n",
+                e ? "LARECOMP_VK_XFB_MIRROR" : "F1/larecomp.ini gpu_xfb_mirror=on",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -6715,6 +6721,33 @@ static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) 
 static void xm_copy_back(VkCommandBuffer cb) {
     if (!xm_back_n || !xm_buf || !gmem_buf) { xm_back_n = 0; return; }
     vk_full_barrier(cb);
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Prefer the per-piece VkBuffer as TRANSFER dst so later VB binds see the skin (sparse dst +
+    // piece VB fetch is not coherent on Turnip). Split ranges that cross a piece boundary.
+    if (tw_ready && tw_is_adreno()) {
+        for (int i = 0; i < xm_back_n; i++) {
+            uint64_t src = xm_back[i].srcOffset, rem = xm_back[i].size;
+            uint64_t guest = gwin_base + gmem_lo + xm_back[i].dstOffset;
+            while (rem) {
+                int pi = -1;
+                VkBuffer pbuf = VK_NULL_HANDLE;
+                uint64_t pbase = 0;
+                if (!tw_piece_span(guest, 1, &pi, &pbuf, &pbase) || !pbuf) break;
+                uint64_t pend = pbase + tw_size[pi];
+                uint64_t n = rem;
+                if (guest + n > pend) n = pend - guest;
+                VkBufferCopy c = {src, guest - pbase, n};
+                rec_CmdCopyBuffer(cb, xm_buf, pbuf, 1, &c);
+                src += n;
+                guest += n;
+                rem -= n;
+            }
+        }
+        vk_full_barrier(cb);
+        xm_back_n = 0;
+        return;
+    }
+#endif
     rec_CmdCopyBuffer(cb, xm_buf, gmem_buf, (uint32_t)xm_back_n, xm_back);
     vk_full_barrier(cb);
     xm_back_n = 0;
@@ -7427,7 +7460,11 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         for (int b = 0; b < 4; b++) {
             uint64_t a = xfb_addr[b];
             if (!a || a < gwin_base || a - gwin_base + xfb_size[b] > gwin_max || (a & 3)) continue;
-            uint64_t base = xm_draw ? xm_lo : gwin_base + gmem_lo;  // (the transform feedback mirror's offsets, or the import's)
+            // Mirror, else Turnip per-piece XFB target (same VkBuffer as VB), else sparse gmem import.
+            uint64_t base = xm_draw ? xm_lo : gwin_base + gmem_lo;
+#if defined(__linux__) && !defined(__ANDROID__)
+            if (!xm_draw && tw_xfb_buf) base = tw_xfb_base;
+#endif
             if (a < base) continue;
             uint32_t u[4] = {(uint32_t)((a - base) >> 2), (uint32_t)(xfb_size[b] >> 2), 1, 0};  // (offset, size in words)
             memcpy(rs[66 + b], u, 16);
@@ -7456,8 +7493,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info()
-                  : b->binding == XFB_BUFFER_INDEX && xm_draw ? (VkDescriptorBufferInfo){xm_buf, 0, XM_SIZE} : gmem_info();
+            if (b->binding == GFAST_BUFFER_INDEX) bi[n] = gfast_info();
+            else if (b->binding == XFB_BUFFER_INDEX && xm_draw) bi[n] = (VkDescriptorBufferInfo){xm_buf, 0, XM_SIZE};
+#if defined(__linux__) && !defined(__ANDROID__)
+            else if (b->binding == XFB_BUFFER_INDEX && tw_xfb_buf)
+                bi[n] = (VkDescriptorBufferInfo){tw_xfb_buf, 0, tw_xfb_size};
+#endif
+            else bi[n] = gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -8803,6 +8845,37 @@ static void draw(CmdRec *r, bool indexed) {
             if (xfb_addr[b] >= gwin_base && xfb_size[b] && xfb_addr[b] - gwin_base < gwin_max)
                 vc_mark_gpu(xfb_addr[b] - gwin_base, xfb_addr[b] - gwin_base + xfb_size[b]);
         xm_draw = xm_prepare();
+#if defined(__linux__) && !defined(__ANDROID__)
+        // Mirror off: XFB into the per-piece buffer VB will bind (Android AHB = one shared buffer).
+        tw_xfb_buf = VK_NULL_HANDLE;
+        tw_xfb_base = tw_xfb_size = 0;
+        if (!xm_draw && tw_ready && tw_is_adreno()) {
+            VkBuffer pb = VK_NULL_HANDLE;
+            uint64_t pbase = 0;
+            int pi = -1;
+            bool any = false, ok = true;
+            for (int b = 0; b < 4; b++) {
+                if (!xfb_addr[b] || !xfb_size[b]) continue;
+                any = true;
+                int i = -1;
+                VkBuffer buf = VK_NULL_HANDLE;
+                uint64_t base = 0;
+                if (!tw_piece_span(xfb_addr[b], xfb_size[b], &i, &buf, &base)) { ok = false; break; }
+                if (pi < 0) { pi = i; pb = buf; pbase = base; }
+                else if (i != pi) { ok = false; break; }
+            }
+            if (ok && any && pb && pi >= 0) {
+                tw_xfb_buf = pb;
+                tw_xfb_base = pbase;
+                tw_xfb_size = tw_size[pi];
+                static int logged;
+                if (!logged) {
+                    logged = 1;
+                    LOG("[vk] Turnip: XFB writes through per-piece dma-buf (same VkBuffer as VB; AHB-like)\n");
+                }
+            }
+        }
+#endif
         static int nlog;
         if (nlog++ < 24)
             LOG("[xfb] draw indexed %d mode %llu first %llx count %llu | buffers %llx+%llx %llx+%llx %llx+%llx\n", indexed,

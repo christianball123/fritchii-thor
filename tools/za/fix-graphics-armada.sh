@@ -4,8 +4,9 @@
 # Rebuild required after git pull:
 #   tools/za/build-armada.sh
 #
-# Target: XFB mirror OFF (Android AHB-like), per-piece 128 MB dma-buf VB binds,
-#         END|WRITE flush before submit so CPU mesh is GPU-visible.
+# Target: XFB mirror OFF (Android AHB-like). XFB writes into the same per-piece
+#         128 MB dma-buf VkBuffer that VB/IB binds use — sparse gmem as VB was
+#         noise; sparse XFB + piece VB was stale body (7447).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/zarecomp"
@@ -50,9 +51,13 @@ echo "Rebuild: tools/za/build-armada.sh && $B/lasrecomp"
 echo
 echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
-echo "  [vk] turnip window: memory type … (cached)"
 echo "  [vk] turnip window: … (per-piece VB buffers)"
 echo "  [vk] transform feedback mirror off (Armada/Turnip: per-piece dma-buf VBs …)"
 echo "  [vk] Turnip: binding per-piece dma-buf buffers as VB/IB …"
-echo "  [vk] Turnip: DMA_BUF END|WRITE before submit …"
-echo "  creator: real body; expect large host (per-piece), little/no cached mirror"
+echo "  [vk] Turnip: XFB writes through per-piece dma-buf (same VkBuffer as VB; AHB-like)"
+echo "  creator: real body; expect host traffic, little/no cached mirror"
+echo
+echo "Bad (old settings still forcing mirror):"
+echo "  [settings] … gpu_xfb_mirror=on"
+echo "  [vk] transform feedback mirror on (F1/larecomp.ini …)"
+echo "  → re-run this script, then restart lasrecomp"
