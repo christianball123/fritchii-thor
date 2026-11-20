@@ -6409,19 +6409,15 @@ static VkDescriptorBufferInfo gfast_info(void) {
 // heap as before; the window follows the sessions when they move (xm_prepare). LARECOMP_VK_XFB_MIRROR=0: off, =1: on.
 // Off by default on AMD (#22).
 //
-// Armada / Mesa Turnip (Adreno): keep a larger device-local mirror (256 MB). Head already lives here; body
-// pools overran the old 128 MB window. Prefer mirror hits (relaxed: first chunk written this frame) over the
-// dma-buf VB path; when the mirror misses, bind the dma-buf directly (8066: only config that showed a body).
-// Do NOT GPU-copy gmem→ring on the upload CB — that counted as "cached", left host at 0, and still head-only.
-#if defined(__linux__) && !defined(__ANDROID__)
-#define XM_SIZE (256ull << 20)
-#else
+// Armada / Mesa Turnip: 128 MB mirror (same as desktop). A 256 MB mirror from the creator's xm_lo
+// (7737600000) overran Z-A's phys end (7740000000) by ~118 MB and the 1600 MB turnip window by ~54 MB —
+// copyback/lookup past gmem. 8066 (visible rainbow body) used 128 MB + full-pool guest_direct + dma-buf VB.
 #define XM_SIZE (128ull << 20)  // (64 MB: after going to another area, the sessions spanned 77 MB)
-#endif
 #define XM_CHUNK 256ull
 static VkBuffer xm_buf;
 static VmaAllocation xm_mem;
 static uint64_t xm_lo;  // guest address of the mirror's first byte (0: not placed yet)
+static uint64_t xm_span = XM_SIZE;  // clamped to phys/gmem when placed (Turnip)
 // how many times the window moved (xm_prepare): offsets into the mirror from before a move name other memory - the
 // per-object motion vectors' copy of last frame's arena (objmv_*) is only used when no move came after it
 static uint32_t xm_moves;
@@ -6450,7 +6446,7 @@ static bool xm_on(void) {
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
                            cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Armada/Turnip; %llu MB; first-chunk xm_lookup; LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
+            LOG("[vk] transform feedback mirror on (Armada/Turnip; %llu MB; LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -6460,7 +6456,24 @@ static bool xm_on(void) {
 #endif
 }
 
-static bool xm_inside(uint64_t a, uint64_t n) { return xm_lo && a >= xm_lo && a + n <= xm_lo + XM_SIZE; }
+static bool xm_inside(uint64_t a, uint64_t n) { return xm_lo && xm_span && a >= xm_lo && a + n <= xm_lo + xm_span; }
+
+// Clamp the usable mirror span so it never past the guest phys window or the Turnip dma-buf import.
+static uint64_t xm_clamp_span(uint64_t lo) {
+    uint64_t span = XM_SIZE;
+    if (gwin_base && gwin_max && lo >= gwin_base) {
+        uint64_t phys_hi = gwin_base + gwin_max;
+        if (phys_hi > lo && phys_hi - lo < span) span = phys_hi - lo;
+    }
+    if (tw_ready && tw_span && lo >= tw_base) {
+        uint64_t tw_hi = tw_base + tw_span;
+        if (tw_hi > lo && tw_hi - lo < span) span = tw_hi - lo;
+    } else if (gmem_buf && gmem_size && lo >= gwin_base + gmem_lo) {
+        uint64_t gm_hi = gwin_base + gmem_lo + gmem_size;
+        if (gm_hi > lo && gm_hi - lo < span) span = gm_hi - lo;
+    }
+    return span ? span : XM_SIZE;
+}
 
 static bool xm_all_written(uint64_t a, uint64_t n) {
     if (!n || !xm_inside(a, n)) return false;
@@ -6503,13 +6516,13 @@ static bool xm_prepare(void) {
             out_frames = out_sessions = 0, last_sum = now;
         } else if (!out_frames) last_sum = now;
         if (sp_f != ~0ull && sp_out && xm_lo) {
-            bool fits = sp_hi > sp_lo && sp_hi - sp_lo <= XM_SIZE - (4ull << 20);
+            bool fits = sp_hi > sp_lo && sp_hi - sp_lo <= xm_span - (4ull << 20);
             bool move = follow && fits && !xm_back_n;
             out_frames++, out_sessions += sp_out;
             if (nlog < 3 || move) {
                 nlog++;
                 LOG("[vk] frame %llu: %u of %u transform feedback sessions outside the mirror (%llx-%llx; sessions at %llx-%llx)%s\n",
-                    (unsigned long long)sp_f, sp_out, sp_n, (unsigned long long)xm_lo, (unsigned long long)(xm_lo + XM_SIZE),
+                    (unsigned long long)sp_f, sp_out, sp_n, (unsigned long long)xm_lo, (unsigned long long)(xm_lo + xm_span),
                     (unsigned long long)sp_lo, (unsigned long long)sp_hi,
                     move ? ": moved" : !follow ? "" : !fits ? ": too far apart to move" : ": copies queued, next frame");
             }
@@ -6517,11 +6530,13 @@ static bool xm_prepare(void) {
                 uint64_t lo = ((sp_lo + sp_hi) / 2 - XM_SIZE / 2) & ~0xFFFFFull;
                 if (lo > sp_lo) lo = sp_lo & ~0xFFFFFull;
                 if (lo < gwin_base) lo = gwin_base;
-                if (sp_hi <= lo + XM_SIZE) {
+                uint64_t span = xm_clamp_span(lo);
+                if (sp_hi <= lo + span) {
                     xm_lo = lo;
+                    xm_span = span;
                     memset(xm_written, 0, sizeof xm_written);
                     xm_moves++;
-                    LOG("[vk] transform feedback mirror moved to %llx (+%llu MB)\n", (unsigned long long)xm_lo, (unsigned long long)(XM_SIZE >> 20));
+                    LOG("[vk] transform feedback mirror moved to %llx (+%llu MB)\n", (unsigned long long)xm_lo, (unsigned long long)(xm_span >> 20));
                 }
             }
         }
@@ -6540,7 +6555,8 @@ static bool xm_prepare(void) {
         if (!xm_lo) {  // placed around the first session's buffers (the arena is a few MB)
             uint64_t lo = (xfb_addr[b] & ~0xFFFFFull) - (16ull << 20);
             xm_lo = lo < gwin_base ? gwin_base : lo;
-            LOG("[vk] transform feedback mirror at %llx (+%llu MB)\n", (unsigned long long)xm_lo, (unsigned long long)(XM_SIZE >> 20));
+            xm_span = xm_clamp_span(xm_lo);
+            LOG("[vk] transform feedback mirror at %llx (+%llu MB)\n", (unsigned long long)xm_lo, (unsigned long long)(xm_span >> 20));
         }
         if ((xfb_addr[b] & 3) || !xm_inside(xfb_addr[b], xfb_size[b])) return false;
         if (!GM_IN(xfb_addr[b], xfb_size[b])) {  // (also with the whole heap imported: the mirror may reach past its end)
@@ -6574,31 +6590,10 @@ static bool xm_prepare(void) {
 
 // a vertex stream inside the mirror's transform feedback output: read there
 static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
-    if (!xm_buf || !n || !xm_inside(a, n)) return false;
-    if (xm_all_written(a, n)) {
-        *buf = xm_buf;
-        *off = a - xm_lo;
-        return true;
-    }
-#if defined(__linux__) && !defined(__ANDROID__)
-    // Turnip: draw-sized looks still over-read a few unwritten 256 B chunks past the XFB
-    // payload; requiring every chunk hid the body (fell through to gmem) while the head's
-    // tight ranges stayed on the mirror. If the first chunk was written this frame, trust
-    // the device-local mirror for the bind (LARECOMP_XM_STRICT=1 restores all-chunks).
-    if (tw_is_adreno()) {
-        static int strict = -1;
-        if (strict < 0) strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
-        if (!strict) {
-            uint32_t now = (uint32_t)vk_frame_counter() + 1;
-            if (xm_written[(a - xm_lo) / XM_CHUNK] == now) {
-                *buf = xm_buf;
-                *off = a - xm_lo;
-                return true;
-            }
-        }
-    }
-#endif
-    return false;
+    if (!xm_buf || !xm_all_written(a, n)) return false;
+    *buf = xm_buf;
+    *off = a - xm_lo;
+    return true;
 }
 
 // the submission's end (outside any pass): what transform feedback wrote, to the heap
@@ -7103,7 +7098,7 @@ void vk_exec_reset(void) {
     }
     gmem_size = gmem_tried = 0;
     gmem_lo = 0;
-    xm_lo = 0, xm_back_n = 0, xm_moves++;  // (the transform feedback mirror: placed again, nothing written yet)
+    xm_lo = 0, xm_span = XM_SIZE, xm_back_n = 0, xm_moves++;  // (the transform feedback mirror: placed again, nothing written yet)
     memset(xm_written, 0, sizeof xm_written);
     for (int k = 0; k < gc_n; k++) {  // (lazy chunks: their pages are replaced too)
         if (gc[k].buf) { vkDestroyBuffer(g_vk.dev, gc[k].buf, NULL); vkFreeMemory(g_vk.dev, gc[k].mem, NULL); }
@@ -9299,9 +9294,9 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
-    // Index scan first when deferred: xm_lookup needs the *used* byte count, not the whole mesh pool
-    // (v.size can be 100MB+). Full-pool lookups miss the 128MB XFB mirror → body bound gmem and vanished;
-    // head used tight XFB ranges and hit the mirror.
+    // Thor/Turnip (8066): bind the *full* pool via guest_direct (v.size). Draw-sized xm_lookup
+    // put the head on the mirror and left the body on incoherent dma-buf / empty — head-only or nothing.
+    // Full-pool misses the 128 MB mirror and binds gmem as VB (rainbow body was at least visible).
     if (scan_src) {
         if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
         else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
@@ -9320,13 +9315,21 @@ static void draw_(CmdRec *r, bool indexed) {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
             VkDeviceSize doff;
-            uint64_t stride0 = vl.stride[s], look = v.size;
-            if (v.addr && v.size && stride0 && !vl.divisor[s] && max_index) {
-                look = (uint64_t)max_index * stride0 + 256;
-                if (look > v.size) look = v.size;
-            } else if (v.addr && v.size && stride0 && vl.divisor[s] && !g_ind_gpu) {
-                look = ((uint64_t)base_inst + inst) * stride0 + 256;
-                if (look > v.size) look = v.size;
+            // Default: full pool (8066). LARECOMP_XM_DRAW_SIZE=1: draw-sized look (debug).
+            uint64_t look = v.size;
+            {
+                static int draw_sz = -1;
+                if (draw_sz < 0) draw_sz = ENV("LARECOMP_XM_DRAW_SIZE") && atoi(ENV("LARECOMP_XM_DRAW_SIZE"));
+                if (draw_sz) {
+                    uint64_t stride0 = vl.stride[s];
+                    if (v.addr && v.size && stride0 && !vl.divisor[s] && max_index) {
+                        look = (uint64_t)max_index * stride0 + 256;
+                        if (look > v.size) look = v.size;
+                    } else if (v.addr && v.size && stride0 && vl.divisor[s] && !g_ind_gpu) {
+                        look = ((uint64_t)base_inst + inst) * stride0 + 256;
+                        if (look > v.size) look = v.size;
+                    }
+                }
             }
             if (v.addr && look && guest_direct(0, v.addr, look, &dbuf, &doff)) {
                 if (rd.n < RD_STREAMS && !vl.divisor[s] && vl.stride[s])

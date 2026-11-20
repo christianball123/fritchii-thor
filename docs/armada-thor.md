@@ -80,18 +80,19 @@ Data, saves, settings and logs: `~/.local/share/zarecomp` (same as desktop Linux
 
 ## Graphics (Turnip guest window)
 
-Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, keeps a **256 MB device-local XFB mirror**, looks up skinned VBs by **draw size** with a **first-chunk** written check (strict all-chunks hid the body), and binds remaining streams as **dma-buf VBs** (the only Thor config that ever showed a body). Prefill each dma-buf before `MAP_FIXED` so boot does not crash.
+Turnip on Armada **does not** expose `VK_EXT_external_memory_host`. This fork shares the **top ~1600 MB** (1536+64 ring) of Z-A’s guest phys window via **HOST_CACHED** dma-buf + a sparse buffer, keeps a **128 MB** device-local XFB mirror (clamped so it never past phys/turnip), binds **full mesh pools** as dma-buf VBs when the mirror misses (8066: only config with a visible body), and prefills each dma-buf before `MAP_FIXED`.
 
 Thor evidence:
 
 | Config | Result |
 |--------|--------|
 | Mirror **off** | Nothing |
-| GPU-copy gmem→ring on upload CB | Head only, `0MB host` (wrong) |
-| Strict all-chunk `xm_lookup` | Head only (body missed mirror) |
-| Whole-window `DMA_BUF_SYNC` before submit | Head only (clobbered skinned pages) |
+| 256 MB mirror from creator `xm_lo` | Overruns phys by ~118 MB — broken |
+| Draw-sized / first-chunk `xm_lookup` | Head only / nothing |
+| GPU-copy gmem→ring on upload CB | Head only, `0MB host` |
+| Whole-window `DMA_BUF_SYNC` before submit | Head only |
 | MAP_FIXED then memcpy (zero hole) | Boot crash `signal 11 accessing 0` |
-| Prefill → MAP_FIXED + 256 MB mirror + first-chunk lookup + dma-buf VB | Target path |
+| Prefill + 128 MB clamped mirror + full-pool dma-buf VB | Target (8066) |
 
 ### Fix (needs rebuild)
 
@@ -107,18 +108,19 @@ Good log lines:
 ```
 [vk] turnip window: sharing top 1600 MB …
 [vk] turnip window: memory type … (cached)
-[vk] transform feedback mirror on (Armada/Turnip; 256 MB; first-chunk xm_lookup …)
+[vk] transform feedback mirror on (Armada/Turnip; 128 MB …)
+[vk] transform feedback mirror at … (+128 MB)   # or less if clamped
 [vk] Turnip: binding dma-buf gmem as vertex/index buffers …
 ```
 
-Creator frames should show both `cached` (mirror) and some `host` (dma-buf VB) traffic — not `0MB host` with head-only.
+Creator frames: some `cached` + large `host` (full-pool dma-buf VBs). Rainbow body is progress; head-only/`0MB host` is not.
 
 Env knobs:
 
 | Variable | Effect |
 |----------|--------|
 | `LARECOMP_VK_XFB_MIRROR=0` | Mirror off — invisible on Turnip |
-| `LARECOMP_XM_STRICT=1` | All-chunk xm_lookup (hid body) |
+| `LARECOMP_XM_DRAW_SIZE=1` | Draw-sized look (hid body — debug) |
 | `LARECOMP_TURNIP_UNCACHED=1` | Uncached dma-buf (hid body) |
 | `LARECOMP_TURNIP_DMABUF_SYNC=1` | Pre-submit dma-buf sync (hid body — debug) |
 | `LARECOMP_TURNIP_GMEM_VB=0` | CPU guest_copy instead of dma-buf VB (hid body) |
