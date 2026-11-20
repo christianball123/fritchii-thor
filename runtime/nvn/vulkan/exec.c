@@ -6436,10 +6436,13 @@ static VkDescriptorBufferInfo gfast_info(void) {
 // heap as before; the window follows the sessions when they move (xm_prepare). LARECOMP_VK_XFB_MIRROR=0: off, =1: on.
 // Off by default on AMD (#22).
 //
-// Armada / Mesa Turnip: 128 MB mirror (same as desktop). A 256 MB mirror from the creator's xm_lo
-// (7737600000) overran Z-A's phys end (7740000000) by ~118 MB and the 1600 MB turnip window by ~54 MB —
-// copyback/lookup past gmem. 8066 (visible rainbow body) used 128 MB + full-pool guest_direct + dma-buf VB.
+// Armada / Mesa Turnip: allocate up to 256 MB for the mirror buffer; xm_span is clamped to phys/turnip
+// so lookups never past guest memory (creator xm_lo leaves ~138 MB of phys). Desktop stays at 128 MB.
+#if defined(__linux__) && !defined(__ANDROID__)
+#define XM_SIZE (256ull << 20)
+#else
 #define XM_SIZE (128ull << 20)  // (64 MB: after going to another area, the sessions spanned 77 MB)
+#endif
 #define XM_CHUNK 256ull
 static VkBuffer xm_buf;
 static VmaAllocation xm_mem;
@@ -6473,7 +6476,8 @@ static bool xm_on(void) {
         if (!on && !e) LOG("[vk] transform feedback mirror off (%s; LARECOMP_VK_XFB_MIRROR=1: on)\n",
                            cs == GPU_OFF ? "F1 > Compatibility" : "this AMD GPU, F1 > Compatibility to turn it on");
         else if (on && !e && g_vk.props.vendorID == 0x5143)
-            LOG("[vk] transform feedback mirror on (Armada/Turnip; %llu MB; LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
+            LOG("[vk] transform feedback mirror on (Armada/Turnip; up to %llu MB, clamped; any-chunk xm_lookup; "
+                "LARECOMP_VK_XFB_MIRROR=0 to turn off)\n",
                 (unsigned long long)(XM_SIZE >> 20));
     }
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -6617,10 +6621,36 @@ static bool xm_prepare(void) {
 
 // a vertex stream inside the mirror's transform feedback output: read there
 static bool xm_lookup(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
-    if (!xm_buf || !xm_all_written(a, n)) return false;
-    *buf = xm_buf;
-    *off = a - xm_lo;
-    return true;
+    if (!xm_buf || !n || !xm_inside(a, n)) return false;
+    if (xm_all_written(a, n)) {
+        *buf = xm_buf;
+        *off = a - xm_lo;
+        return true;
+    }
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Thor log (CPU-copy path): 49 MB cached (head) + 0 host + ~285 MB upload, body missing.
+    // Draw-sized looks still span a few unwritten 256 B chunks past each XFB payload; all-chunks
+    // failed → tw_vb_copy read stale gmem (pre-skin). If this frame wrote *any* chunk in the
+    // range, bind the device-local mirror (LARECOMP_XM_STRICT=1: all-chunks only).
+    if (tw_is_adreno()) {
+        static int strict = -1;
+        if (strict < 0) strict = ENV("LARECOMP_XM_STRICT") && atoi(ENV("LARECOMP_XM_STRICT"));
+        if (!strict) {
+            uint32_t now = (uint32_t)vk_frame_counter() + 1;
+            uint64_t c0 = (a - xm_lo) / XM_CHUNK, c1 = (a + n - 1 - xm_lo) / XM_CHUNK;
+            uint64_t clim = xm_span / XM_CHUNK;
+            if (clim && c1 >= clim) c1 = clim - 1;
+            for (uint64_t c = c0; c <= c1; c++) {
+                if (xm_written[c] == now) {
+                    *buf = xm_buf;
+                    *off = a - xm_lo;
+                    return true;
+                }
+            }
+        }
+    }
+#endif
+    return false;
 }
 
 // the submission's end (outside any pass): what transform feedback wrote, to the heap

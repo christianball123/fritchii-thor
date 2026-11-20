@@ -51,6 +51,6 @@ echo
 echo "Good log lines:"
 echo "  [vk] turnip window: sharing top 1600 MB …"
 echo "  [vk] turnip window: memory type … (cached)"
-echo "  [vk] transform feedback mirror on (Armada/Turnip; 128 MB …)"
+echo "  [vk] transform feedback mirror on (Armada/Turnip; … clamped; any-chunk xm_lookup …)"
 echo "  [vk] Turnip: vertex/index streams CPU-copied to ring …"
-echo "  creator: real body (not a static-noise rectangle under the head)"
+echo "  creator: real body; log 'cached' should rise well above ~49 MB (not head-only)"
