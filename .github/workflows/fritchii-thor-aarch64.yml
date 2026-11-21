@@ -1,6 +1,6 @@
 name: fritchii-thor-aarch64
 
-# Builds Fritchii v6.1 + Duo/Thor patches into Fritchii-Thor-aarch64.AppImage.
+# Builds Fritchii v6.5 + Duo/Thor patches into Fritchii-Thor-aarch64.AppImage.
 # Needs GitHub-hosted ubuntu-24.04-arm (mirror this repo to GitHub, or copy the
 # workflow into a Frizti/Fritchii fork that vendors packaging/thor + patches/duo).
 
@@ -10,7 +10,7 @@ on:
       fritchii_ref:
         description: Fritchii git ref (tag or SHA)
         type: string
-        default: fritchii-v6.1
+        default: fritchii-v6.5
       publish_release:
         description: Publish a GitHub release with the AppImage
         type: boolean
@@ -33,7 +33,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
       CCACHE_COMPILERCHECK: content
-      FRITCHII_REF: ${{ inputs.fritchii_ref || 'fritchii-v6.1' }}
+      FRITCHII_REF: ${{ inputs.fritchii_ref || 'fritchii-v6.5' }}
     steps:
       - name: Check out memvault (patches + packaging)
         uses: actions/checkout@v5

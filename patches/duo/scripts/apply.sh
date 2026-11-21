@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Apply Eden Duo (Linux) + Thor Qt onto a Frizti/Fritchii checkout at fritchii-v6.1.
+# Apply Eden Duo (Linux) + Thor Qt onto a Frizti/Fritchii checkout at fritchii-v6.5.
 #
 # Usage:
 #   ./patches/duo/scripts/apply.sh /path/to/Fritchii
 #
-# Expects the Fritchii tree to be checked out at tag fritchii-v6.1 (e0f673a).
+# Expects the Fritchii tree to be checked out at tag fritchii-v6.5 (61fa4fdda).
 
 set -euo pipefail
 
@@ -34,7 +34,7 @@ fi
 echo "==> Copying Duo-only tree (mods, dsmod, dsm, Thor Qt, …)"
 cp -a "$ROOT/tree/." .
 
-echo "==> Applying Fritchii-v6.1 hook patches"
+echo "==> Applying Fritchii-v6.5 hook patches"
 # Numeric order: 0001…0009, 0010… (glob 0*.patch, then sort)
 mapfile -t HOOKS < <(find "$ROOT/hooks" -maxdepth 1 -name '0*.patch' | sort)
 for p in "${HOOKS[@]}"; do

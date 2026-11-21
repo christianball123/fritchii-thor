@@ -1,7 +1,7 @@
-# Eden Duo → Fritchii v6.1 (Thor) patch kit
+# Eden Duo → Fritchii v6.5 (Thor) patch kit
 
 Merges **igawa6/eden-duo**’s dual-screen companion engine into
-**Frizti/Fritchii** tag **`fritchii-v6.1`** (`e0f673a`), plus Claude’s Thor-only
+**Frizti/Fritchii** tag **`fritchii-v6.5`** (`61fa4fdda`), plus Claude’s Thor-only
 Linux Qt pieces recovered from the working AppImage
 (`/tmp/fritchii-thor/squashfs-root`, binary built from
 `/home/claude/frizti/fritchii`).
@@ -14,19 +14,19 @@ Android JNI / Kotlin from Duo is **not** included. Packaging hooks stay in
 | Path | Role |
 |---|---|
 | `tree/` | Duo-only sources to copy in: `src/core/mods/`, `hle/service/dsm/`, `file_sys/duo_external_content_index.*`, `video_core/dsmod/`, `vk_dsmod_*`, companion shaders, `common/dsmod_dev_tools.h`, `hid_core/.../dsmod_pad_gate.h`, Thor `src/yuzu/duo/`, docs |
-| `hooks/0001-*.patch` … `0020-*.patch` | Fritchii-v6.1-targeted hooks — **`git apply --check` clean** |
+| `hooks/0001-*.patch` … `0020-*.patch` | Fritchii-v6.5-targeted hooks — **`git apply --check` clean** |
 | `thor-qt/` | Same Thor Qt sources + `main.ui` patch (also mirrored under `tree/src/yuzu/duo/`) |
 | `refs/eden-duo-vs-eden/` | Eden base `6828dc59` → Duo diffs for files still needing a **manual** Fritchii port |
 | `refs/upstream-hooks-linux.tsv` | Duo’s ledger of non-Android upstream touches |
 | `CONFLICTS.md` | What still blocks full companion quality / packaging |
 | `scripts/apply.sh` | Copy `tree/` + apply `hooks/0*.patch` in order |
 
-## Apply on fritchii-v6.1
+## Apply on fritchii-v6.5
 
 ```bash
 git clone https://github.com/Frizti/Fritchii.git
 cd Fritchii
-git checkout fritchii-v6.1
+git checkout fritchii-v6.5
 
 # from the memvault repo:
 ./patches/duo/scripts/apply.sh /path/to/Fritchii
@@ -86,7 +86,7 @@ CLI install remains `packaging/thor/duo-companion.py` via
 | `0016` | `AppLoader::GetFile` + `FileSys::OpenProgramNcaFromGameFile` for Duo private RomFS |
 | `0017` | `common/thread.cpp` includes `nx2_debug_control.h` on aarch64 (EXP103) |
 | `0018` | `fritchii_write_ring.h` `strncpy` uses `size-1` (GCC `-Werror=stringop-truncation`) |
-| `0019` | Move Duo Companion `<action>` defs inside main widget (0004 left them after `</widget>`) |
+| `0019` | _(removed)_ folded into `0004` on fritchii-v6.5 |
 | `0020` | `#include` DuoQt headers in `main.cpp` / `main_window.cpp` (0004 wired calls without includes) |
 
 Also in `tree/`:
@@ -111,5 +111,5 @@ Details: `packaging/thor/BUILD.md`.
 
 - Duo: `https://github.com/igawa6/eden-duo` (sparse under `/tmp/src/eden-duo`)
 - Duo Eden base: `6828dc59dc` from `git.eden-emu.dev/eden-emu/eden`
-- Fritchii: `https://github.com/Frizti/Fritchii` tag `fritchii-v6.1`
+- Fritchii: `https://github.com/Frizti/Fritchii` tag `fritchii-v6.5`
 - Working AppImage strings: `/tmp/fritchii-thor/squashfs-root/shared/bin/eden`

@@ -24,7 +24,7 @@ flags=(
   -DCMAKE_BUILD_TYPE=Release
   -DBUILD_TESTING=OFF
   -DYUZU_TESTS=OFF
-  # fritchii-v6.1 has no yuzu_cmd / eden-cli sources; GUI target OUTPUT_NAME is lichii.
+  # fritchii-v6.5 has no yuzu_cmd / eden-cli sources; GUI target OUTPUT_NAME is lichii.
   -DYUZU_CMD=OFF
   -DYUZU_ROOM=OFF
   -DYUZU_ROOM_STANDALONE=OFF

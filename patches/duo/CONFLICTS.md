@@ -1,7 +1,7 @@
-# Duo → Fritchii v6.1: remaining manual ports
+# Duo → Fritchii v6.5: remaining manual ports
 
 The patches under `hooks/` plus the Duo-only `tree/` apply cleanly on
-`fritchii-v6.1` (`e0f673a`). Stock Duo is an Eden Android fork; Fritchii v6.1 has
+`fritchii-v6.5` (`61fa4fdda`). Stock Duo is an Eden Android fork; Fritchii v6.5 has
 Switch 2 / Lichii divergence (especially `video_core/gpu.cpp`,
 `rasterizer_interface.h`, `renderer_vulkan/*`). Eden→Duo reference diffs live in
 `refs/eden-duo-vs-eden/` (generated against Duo’s Eden base `6828dc59dc`).
@@ -72,13 +72,13 @@ Hooks + `tree/` alone do not ship a Thor companion bottom screen. Still needed:
 
 ## Known non-apply of raw Eden→Duo diffs onto Fritchii
 
-`git apply refs/eden-duo-vs-eden/*.diff` against fritchii-v6.1 **will fail** for
+`git apply refs/eden-duo-vs-eden/*.diff` against fritchii-v6.5 **will fail** for
 nearly every non-trivial file (`core.cpp`, `gpu.cpp`, `nso.cpp`,
 `renderer_vulkan.cpp`, …). That is expected: those diffs are documentation /
 porting guides, not Fritchii patches. Only `hooks/0*.patch` are authored
-against fritchii-v6.1.
+against fritchii-v6.5.
 
-- Hook 0021: guard nvhost_gpu.cpp immintrin/_mm_prefetch for aarch64 (stock Fritchii v6.1).
+- Hook 0021: guard nvhost_gpu.cpp immintrin/_mm_prefetch for aarch64 (stock Fritchii v6.5).
 
 - Hook 0022: known_issues IntelCpu guards cpu_string for aarch64 stub CPUCaps.
 
@@ -95,3 +95,8 @@ against fritchii-v6.1.
 - Real --duo-bottom-helper: SDL present + X11 raise/claim over ArmadaLive; shared /eden-duo-bottom-* buffer via duo_bottom_bridge (Claude AppImage path).
 
 - Bottom claim fix: STEAM_GAME=852199 + GAMESCOPECTRL_BASELAYER_APPID (gamescope), shared DOUB header @0x7c pixels (Claude binary).
+
+## Obsolete on fritchii-v6.5+
+
+- Hook **0019** (move Duo actions inside `</widget>`) is folded into **0004**.
+- Hook **0022** (aarch64 `IntelCpu`/`cpu_string` in `known_issues.cpp`) is gone: v6.5 uses `Common::IntelHybridCpu()` and no longer reads `cpu_string` there.

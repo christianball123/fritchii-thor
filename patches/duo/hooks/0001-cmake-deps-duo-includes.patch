@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9f3e53b..d1f08d7 100644
+index 9f3e53b35..d1f08d7ba 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -55,6 +55,7 @@ cmake_dependent_option(YUZU_USE_QT_WEB_ENGINE "Use QtWebEngine for web applet im
@@ -11,7 +11,7 @@ index 9f3e53b..d1f08d7 100644
  option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
  
 diff --git a/cpmfile.json b/cpmfile.json
-index 5789b41..59bf857 100644
+index 5789b415e..59bf85787 100644
 --- a/cpmfile.json
 +++ b/cpmfile.json
 @@ -310,6 +310,17 @@
@@ -33,7 +33,7 @@ index 5789b41..59bf857 100644
          "hash": "d2846ea228415772645eea4b52a9efd33e6a563043dd3de059e798be6391a8f0ca089f455ae420ff22574939ed0f48ed7c6ff3d5a9987d5231dbf3b3f89b484b",
          "min_version": "1.4.317",
 diff --git a/externals/CMakeLists.txt b/externals/CMakeLists.txt
-index 1b2da37..24e99ca 100644
+index 1b2da37dd..24e99ca42 100644
 --- a/externals/CMakeLists.txt
 +++ b/externals/CMakeLists.txt
 @@ -449,3 +449,6 @@ if (APPLE)
@@ -44,10 +44,10 @@ index 1b2da37..24e99ca 100644
 +# Eden Duo dual-screen runtime
 +AddJsonPackage(unordered-dense)
 diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
-index 453f73a..752323a 100644
+index 540065d94..ff5e626ca 100644
 --- a/src/common/CMakeLists.txt
 +++ b/src/common/CMakeLists.txt
-@@ -307,3 +307,6 @@ if (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_FLAGS_RELEASE M
+@@ -309,3 +309,6 @@ if (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_FLAGS_RELEASE M
  endif()
  
  create_target_directory_groups(common)
@@ -55,7 +55,7 @@ index 453f73a..752323a 100644
 +# Keep header-only runtime/renderer development gates consistent in every consumer.
 +target_compile_definitions(common PUBLIC EDEN_DSMOD_BUILD_DEV_TOOLS=$<BOOL:${EDEN_DSMOD_BUILD_DEV_TOOLS}>)
 diff --git a/src/common/stb.h b/src/common/stb.h
-index 3742c32..0de1a22 100644
+index 3742c32f8..0de1a22bf 100644
 --- a/src/common/stb.h
 +++ b/src/common/stb.h
 @@ -6,7 +6,8 @@
@@ -69,10 +69,10 @@ index 3742c32..0de1a22 100644
  #include <stb_image_resize.h>
  #include <stb_image_write.h>
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index c8bcd76..1d64a26 100644
+index 0564dc003..2a8dc58f6 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -1325,4 +1325,6 @@ elseif (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_FLAGS_RELEA
+@@ -1327,4 +1327,6 @@ elseif (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_FLAGS_RELEA
      set_source_files_properties(${lichii_kernel_sources} PROPERTIES COMPILE_OPTIONS -fno-lto)
  endif()
  
@@ -80,7 +80,7 @@ index c8bcd76..1d64a26 100644
 +
  create_target_directory_groups(core)
 diff --git a/src/hid_core/CMakeLists.txt b/src/hid_core/CMakeLists.txt
-index 2b96dd9..9681d88 100644
+index 2b96dd999..9681d882c 100644
 --- a/src/hid_core/CMakeLists.txt
 +++ b/src/hid_core/CMakeLists.txt
 @@ -78,6 +78,7 @@ add_library(hid_core STATIC
@@ -92,10 +92,10 @@ index 2b96dd9..9681d88 100644
      resources/npad/npad_data.h
      resources/npad/npad_resource.cpp
 diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
-index 318beaf..75318e3 100644
+index 7588243aa..3d515a09a 100644
 --- a/src/video_core/CMakeLists.txt
 +++ b/src/video_core/CMakeLists.txt
-@@ -673,4 +673,6 @@ if (ENABLE_NVIDIA_DLSS)
+@@ -680,4 +680,6 @@ if (ENABLE_NVIDIA_DLSS)
      message(STATUS "NVIDIA DLSS through Streamline: ${STREAMLINE_INCLUDE_DIR}")
  endif()
  
@@ -103,11 +103,11 @@ index 318beaf..75318e3 100644
 +
  create_target_directory_groups(video_core)
 diff --git a/src/video_core/host_shaders/CMakeLists.txt b/src/video_core/host_shaders/CMakeLists.txt
-index 63ea3ee..662d85d 100644
+index 567cc820f..9e984c7a3 100644
 --- a/src/video_core/host_shaders/CMakeLists.txt
 +++ b/src/video_core/host_shaders/CMakeLists.txt
-@@ -112,6 +112,8 @@ set(SHADER_FILES
-     ${CMAKE_CURRENT_SOURCE_DIR}/ocarina_dlss_bias.comp
+@@ -115,6 +115,8 @@ set(SHADER_FILES
+     ${CMAKE_CURRENT_SOURCE_DIR}/ocarina_motion_view.comp
  )
  
 +include(duo_shaders.cmake) # Eden Duo: second-screen compositor shaders

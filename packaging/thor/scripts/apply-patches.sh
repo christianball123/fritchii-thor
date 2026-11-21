@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply memvault Duo + Thor patch kit onto a Fritchii checkout at fritchii-v6.1.
+# Apply memvault Duo + Thor patch kit onto a Fritchii checkout at fritchii-v6.5.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"

@@ -1,6 +1,6 @@
 # Fritchii Thor AppImage (ArmadaOS / AYN Thor)
 
-How Claude’s custom Thor AppImage is put together, and how to rebuild it on Fritchii v6.1+.
+How Claude’s custom Thor AppImage is put together, and how to rebuild it on Fritchii v6.5+.
 
 ## What the Drive AppImage is
 
@@ -35,9 +35,9 @@ On first launch (unless declined), the hook installs `/usr/local/libexec/eden-ma
 
 Bottom screen off: `EDEN_DUO_SCREEN=off`. Companions live under `~/.local/share/fritchii/load/`.
 
-## Rebuild plan (Fritchii v6.1)
+## Rebuild plan (Fritchii v6.5)
 
-1. Start from `Frizti/Fritchii` tag `fritchii-v6.1`.
+1. Start from `Frizti/Fritchii` tag `fritchii-v6.5`.
 2. Apply the Duo patch kit: `packaging/thor/scripts/apply-patches.sh /path/to/Fritchii` (hooks `0001`–`0008` cover DualScreen runtime, Vulkan Composite/aux present, NSO mailbox, npad gate; leftover texture-cache / kernel ports are in `patches/duo/CONFLICTS.md`).
 3. Configure + build on **linux-aarch64**:
    ```bash
@@ -62,7 +62,7 @@ Workflow: `.github/workflows/fritchii-thor-aarch64.yml` (manual dispatch on
 1. Create a private GitHub repo (e.g. `christianball123/fritchii-thor`) and push
    this memvault `main` (or at least `patches/duo`, `packaging/thor`, and the
    workflow file).
-2. Actions → **fritchii-thor-aarch64** → Run workflow (ref `fritchii-v6.1`).
+2. Actions → **fritchii-thor-aarch64** → Run workflow (ref `fritchii-v6.5`).
 3. Download the `Fritchii-Thor-aarch64` artifact, `chmod +x`, replace your
    existing Thor AppImage path (Steam ROM Manager can keep the same target).
 

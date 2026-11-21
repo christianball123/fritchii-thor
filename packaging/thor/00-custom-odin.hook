@@ -5,7 +5,10 @@
 #   old      -> your previous custom Turnip (Mesa 26.1.2)
 #   system   -> let Eden see the system's own Vulkan drivers
 
-_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/eden/qt-config.ini"
+# Fritchii reads ~/.config/fritchii (it migrates the old eden folder); tune both so the
+# Thor tweaks apply whichever one is in use.
+for _cfg in "${XDG_CONFIG_HOME:-$HOME/.config}/fritchii/qt-config.ini" \
+            "${XDG_CONFIG_HOME:-$HOME/.config}/eden/qt-config.ini"; do
 if [ -f "$_cfg" ]; then
 	sed -i 's/^vulkan_device=1$/vulkan_device=0/' "$_cfg" 2>/dev/null || :
 	# Odin 2: smooth pacing + CPU shader compile (best of v2 fluency + v3 FPS)
@@ -20,6 +23,7 @@ if [ -f "$_cfg" ]; then
 		fi
 	done
 fi
+done
 
 # Do not let the built-in updater replace this custom build with a stock one
 export DISABLE_AUTO_UPDATES="${DISABLE_AUTO_UPDATES:-1}"

@@ -1,8 +1,8 @@
 diff --git a/src/yuzu/CMakeLists.txt b/src/yuzu/CMakeLists.txt
-index 50b4e7a..1150c7f 100644
+index 51b30816e..a46788bbe 100644
 --- a/src/yuzu/CMakeLists.txt
 +++ b/src/yuzu/CMakeLists.txt
-@@ -456,4 +456,6 @@ if (TARGET nxformat::static_nozstd)
+@@ -458,4 +458,6 @@ if (TARGET nxformat::static_nozstd)
      target_link_libraries(yuzu PRIVATE nxformat::static_nozstd)
      target_compile_definitions(yuzu PRIVATE LICHII_NX_TOOLS)
  endif()
@@ -10,21 +10,21 @@ index 50b4e7a..1150c7f 100644
 +
  create_target_directory_groups(yuzu)
 diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
-index 9b496ae..c74a13f 100644
+index 2b7a80fa8..a44c6ddb1 100644
 --- a/src/yuzu/main.cpp
 +++ b/src/yuzu/main.cpp
-@@ -427,6 +427,9 @@ static void LoadNx2Switches(const char* argv0) {
+@@ -501,6 +501,9 @@ static void LoadNx2Switches(const char* argv0) {
  }
  
  int main(int argc, char* argv[]) {
 +    if (const auto helper_rc = DuoQt::MaybeRunBottomHelper(argc, argv)) {
 +        return *helper_rc;
 +    }
- #ifdef ENABLE_UPDATE_CHECKER
-     // Before the switches are added to the environment, which a restart must not inherit.
-     Updater::PrepareLaunch();
+ #ifdef _WIN32
+     // The helper process of a fatal error's report: it writes the dump and ends here.
+     if (int helper_exit_code = 0; Common::Windows::RunDumpHelper(helper_exit_code)) {
 diff --git a/src/yuzu/main.ui b/src/yuzu/main.ui
-index eb075bc..7157534 100644
+index eb075bc99..cbc0f95b1 100644
 --- a/src/yuzu/main.ui
 +++ b/src/yuzu/main.ui
 @@ -68,6 +68,8 @@
@@ -36,10 +36,10 @@ index eb075bc..7157534 100644
      <addaction name="separator"/>
      <addaction name="action_Load_File"/>
      <addaction name="action_Load_Folder"/>
-@@ -632,4 +634,14 @@
-   <include location="yuzu.qrc"/>
-  </resources>
-  <connections/>
+@@ -627,6 +629,16 @@
+     <string>&amp;Carousel View</string>
+    </property>
+   </action>
 +  <action name="action_Install_Duo_Companion">
 +   <property name="text">
 +    <string>Install Duo Companion...</string>
@@ -50,12 +50,14 @@ index eb075bc..7157534 100644
 +    <string>Remove Duo Companion...</string>
 +   </property>
 +  </action>
- </ui>
+  </widget>
+  <resources>
+   <include location="yuzu.qrc"/>
 diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
-index 6b228b5..3c7d528 100644
+index 94b7f2dd2..bad16fddf 100644
 --- a/src/yuzu/main_window.cpp
 +++ b/src/yuzu/main_window.cpp
-@@ -1911,6 +1911,8 @@ void MainWindow::ConnectMenuEvents() {
+@@ -2087,6 +2087,8 @@ void MainWindow::ConnectMenuEvents() {
      connect_menu(ui->action_Load_File, &MainWindow::OnMenuLoadFile);
      connect_menu(ui->action_Load_Folder, &MainWindow::OnMenuLoadFolder);
      connect_menu(ui->action_Install_File_NAND, &MainWindow::OnMenuInstallToNAND);
@@ -64,7 +66,7 @@ index 6b228b5..3c7d528 100644
      connect_menu(ui->action_Exit, &QMainWindow::close);
      connect_menu(ui->action_Load_Amiibo, &MainWindow::OnLoadAmiibo);
  
-@@ -3630,6 +3632,29 @@ ContentManager::InstallResult MainWindow::InstallNCA(const QString& filename) {
+@@ -3839,6 +3841,26 @@ ContentManager::InstallResult MainWindow::InstallNCA(const QString& filename) {
                                        static_cast<FileSys::TitleType>(index), progress_callback);
  }
  
@@ -85,9 +87,6 @@ index 6b228b5..3c7d528 100644
 +}
 +
 +void MainWindow::OnGameListDumpDuoFiles() {
-+    // Wired from the game-list context menu when a title is selected.
-+    // title id / name come from the current game-list selection in Claude's build;
-+    // here we fall back to asking for a title id if none is selected.
 +    DuoQt::DumpCompanionFiles(this, 0, {});
 +}
 +
@@ -95,10 +94,10 @@ index 6b228b5..3c7d528 100644
      QAction* action = qobject_cast<QAction*>(sender());
      assert(action);
 diff --git a/src/yuzu/main_window.h b/src/yuzu/main_window.h
-index b74a9c4..ccc0dea 100644
+index d28c41be1..9c0950e37 100644
 --- a/src/yuzu/main_window.h
 +++ b/src/yuzu/main_window.h
-@@ -386,6 +386,9 @@ private slots:
+@@ -405,6 +405,9 @@ private slots:
      void OnMenuLoadFolder();
      void IncrementInstallProgress();
      void OnMenuInstallToNAND();

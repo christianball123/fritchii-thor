@@ -11,14 +11,14 @@ OUT_NAME="${OUT_NAME:-Fritchii-Thor-aarch64.AppImage}"
 ARCH="$(uname -m)"
 OUT_DIR="${OUT_DIR:-$FRITCHII}"
 
-# Fritchii v6.1 Linux GUI is bin/lichii (CMake OUTPUT_NAME). Older trees used eden/yuzu.
+# Fritchii v6.5 Linux GUI is bin/lichii (CMake OUTPUT_NAME). Older trees used eden/yuzu.
 GUI_BIN=""
 for cand in lichii eden yuzu fritchii; do
   if [ -x "$BUILD_DIR/bin/$cand" ]; then GUI_BIN=$cand; break; fi
 done
 test -n "$GUI_BIN" && test -x "$BUILD_DIR/bin/$GUI_BIN"
 
-# fritchii-v6.1 has no yuzu_cmd / eden-cli target; CLI is optional (--cli in AppRun).
+# fritchii-v6.5 has no yuzu_cmd / eden-cli target; CLI is optional (--cli in AppRun).
 CLI_BIN=""
 for cand in eden-cli yuzu-cmd; do
   if [ -x "$BUILD_DIR/bin/$cand" ]; then CLI_BIN=$cand; break; fi

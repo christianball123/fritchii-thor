@@ -8,7 +8,8 @@
 #   ./Fritchii...AppImage --remove-companion TITLEID            remove one
 #   EDEN_DUO_SCREEN=off   don't use the bottom screen for companions
 
-_duo_data="${XDG_DATA_HOME:-$HOME/.local/share}/eden"
+# Same data dir Fritchii loads companions from (Common::FS EdenDir -> ~/.local/share/fritchii).
+_duo_data="${XDG_DATA_HOME:-$HOME/.local/share}/fritchii"
 _duo_tool() {
 	if ! command -v python3 >/dev/null 2>&1; then
 		echo "python3 is needed for this" >&2
