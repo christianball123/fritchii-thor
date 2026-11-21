@@ -34,6 +34,8 @@ jobs:
       CCACHE_MAXSIZE: 3000M
       CCACHE_COMPILERCHECK: content
       FRITCHII_REF: ${{ inputs.fritchii_ref || 'fritchii-v6.5' }}
+      # Custom Thor builds aren't upstream releases; v6.5 KnownStamps reject LF trees.
+      FRITCHII_SHADER_STAMP_ANY: "1"
     steps:
       - name: Check out memvault (patches + packaging)
         uses: actions/checkout@v5

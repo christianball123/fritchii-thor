@@ -73,3 +73,7 @@ Upstream v6.1 only publishes Windows + Linux x86_64; the Thor file must be built
 on arm64 CI (not the x86_64 cloud agent). The older Claude AppImage used sharun;
 `AppRun.sh` / `AppRun.lib` remain for that layout. New builds use linuxdeploy +
 `AppRun` (same hooks).
+
+## Shader stamp (v6.5+)
+
+Thor configure/GHA set `FRITCHII_SHADER_STAMP_ANY=1` so `Nx2ShaderStamp.cmake` does not stop the build when Duo or a LF checkout changes the Preparing-shaders hash. Upstream release builders keep KnownStamps instead.

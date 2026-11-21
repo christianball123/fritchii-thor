@@ -20,6 +20,12 @@ werror_relax="-Wno-error=stringop-truncation -Wno-error=stringop-overflow \
 cflags="$tune $werror_relax"
 cxxflags="$tune $werror_relax"
 
+# Thor AppImages are custom (Duo + clock-max), not upstream Fritchii releases.
+# fritchii-v6.5's Nx2ShaderStamp KnownStamps still stop LF checkouts unless this
+# is set; ninja regenerates nx2_shader_stamp.h at build time, so export for cmake
+# --build too (workflow job env also sets it).
+export FRITCHII_SHADER_STAMP_ANY="${FRITCHII_SHADER_STAMP_ANY:-1}"
+
 flags=(
   -DCMAKE_BUILD_TYPE=Release
   -DBUILD_TESTING=OFF
